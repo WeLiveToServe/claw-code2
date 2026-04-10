@@ -58,6 +58,7 @@ pub struct RuntimeFeatureConfig {
     plugins: RuntimePluginConfig,
     mcp: McpConfigCollection,
     oauth: Option<OAuthConfig>,
+    env: BTreeMap<String, String>,
     model: Option<String>,
     aliases: BTreeMap<String, String>,
     permission_mode: Option<ResolvedPermissionMode>,
@@ -308,6 +309,7 @@ impl ConfigLoader {
                 servers: mcp_servers,
             },
             oauth: parse_optional_oauth_config(&merged_value, "merged settings.oauth")?,
+            env: parse_optional_env(&merged_value)?,
             model: parse_optional_model(&merged_value),
             aliases: parse_optional_aliases(&merged_value)?,
             permission_mode: parse_optional_permission_mode(&merged_value)?,
@@ -381,6 +383,11 @@ impl RuntimeConfig {
     }
 
     #[must_use]
+    pub fn env(&self) -> &BTreeMap<String, String> {
+        &self.feature_config.env
+    }
+
+    #[must_use]
     pub fn model(&self) -> Option<&str> {
         self.feature_config.model.as_deref()
     }
@@ -447,6 +454,11 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn oauth(&self) -> Option<&OAuthConfig> {
         self.oauth.as_ref()
+    }
+
+    #[must_use]
+    pub fn env(&self) -> &BTreeMap<String, String> {
+        &self.env
     }
 
     #[must_use]
@@ -745,6 +757,13 @@ fn parse_optional_aliases(root: &JsonValue) -> Result<BTreeMap<String, String>, 
         return Ok(BTreeMap::new());
     };
     Ok(optional_string_map(object, "aliases", "merged settings")?.unwrap_or_default())
+}
+
+fn parse_optional_env(root: &JsonValue) -> Result<BTreeMap<String, String>, ConfigError> {
+    let Some(object) = root.as_object() else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(optional_string_map(object, "env", "merged settings")?.unwrap_or_default())
 }
 
 fn parse_optional_hooks_config(root: &JsonValue) -> Result<RuntimeHookConfig, ConfigError> {

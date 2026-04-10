@@ -1,0 +1,6 @@
+{
+  "$schema": "SettingsSchema",
+  "env": {
+    "OPENAI_API_KEY": "set-your-openrouter-api-key-here"
+  }
+}

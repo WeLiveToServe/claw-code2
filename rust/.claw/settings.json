@@ -1,0 +1,8 @@
+{
+  "$schema": "SettingsSchema",
+  "model": "openai/gpt-4.1-mini",
+  "aliases": {
+    "fast": "openai/gpt-4.1-mini",
+    "smart": "openai/gpt-4.1-mini"
+  }
+}

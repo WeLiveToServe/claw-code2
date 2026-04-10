@@ -1,131 +1,135 @@
-# Claw Code
+# claw-code2
 
-<p align="center">
-  <a href="https://github.com/ultraworkers/claw-code">ultraworkers/claw-code</a>
-  ·
-  <a href="./USAGE.md">Usage</a>
-  ·
-  <a href="./rust/README.md">Rust workspace</a>
-  ·
-  <a href="./PARITY.md">Parity</a>
-  ·
-  <a href="./ROADMAP.md">Roadmap</a>
-  ·
-  <a href="https://discord.gg/5TUQKqFWd">UltraWorkers Discord</a>
-</p>
+`claw-code2` is a working fork of [`ultraworkers/claw-code`](https://github.com/ultraworkers/claw-code) focused on turning the Rust `claw` CLI into a cleaner, more model-agnostic agent harness.
 
-<p align="center">
-  <a href="https://star-history.com/#ultraworkers/claw-code&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ultraworkers/claw-code&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ultraworkers/claw-code&type=Date" />
-      <img alt="Star history for ultraworkers/claw-code" src="https://api.star-history.com/svg?repos=ultraworkers/claw-code&type=Date" width="600" />
-    </picture>
-  </a>
-</p>
+The practical goal of this fork is not to replace upstream identity or erase the original Anthropic-oriented design history. It is to harden the harness so it can more cleanly host:
 
-<p align="center">
-  <img src="assets/claw-hero.jpeg" alt="Claw Code" width="300" />
-</p>
+- OpenAI
+- Anthropic
+- xAI
+- Gemini
+- OpenAI-compatible MaaS providers
+- local OpenAI-compatible model servers
 
-Claw Code is the public Rust implementation of the `claw` CLI agent harness.
-The canonical implementation lives in [`rust/`](./rust), and the current source of truth for this repository is **ultraworkers/claw-code**.
+This repo should be read as an active engineering fork: useful today, improving quickly, and still carrying some upstream assumptions that need cleanup.
 
-> [!IMPORTANT]
-> Start with [`USAGE.md`](./USAGE.md) for build, auth, CLI, session, and parity-harness workflows. Make `claw doctor` your first health check after building, use [`rust/README.md`](./rust/README.md) for crate-level details, read [`PARITY.md`](./PARITY.md) for the current Rust-port checkpoint, and see [`docs/container.md`](./docs/container.md) for the container-first workflow.
+## Starting point
 
-## Current repository shape
+This repository started from `ultraworkers/claw-code`, whose canonical implementation lives in the Rust workspace under [`rust/`](./rust).
 
-- **`rust/`** — canonical Rust workspace and the `claw` CLI binary
-- **`USAGE.md`** — task-oriented usage guide for the current product surface
-- **`PARITY.md`** — Rust-port parity status and migration notes
-- **`ROADMAP.md`** — active roadmap and cleanup backlog
-- **`PHILOSOPHY.md`** — project intent and system-design framing
-- **`src/` + `tests/`** — companion Python/reference workspace and audit helpers; not the primary runtime surface
+Upstream already provided:
 
-## Quick start
+- a substantial Rust CLI/runtime/tooling workspace
+- Anthropic-native defaults and aliases
+- OpenAI-compatible and xAI support in parts of the provider stack
+- a growing parity and roadmap process
 
-> [!NOTE]
-> [!WARNING]
-> **`cargo install claw-code` installs the wrong thing.** The `claw-code` crate on crates.io is a deprecated stub that places `claw-code-deprecated.exe` — not `claw`. Running it only prints `"claw-code has been renamed to agent-code"`. **Do not use `cargo install claw-code`.** Either build from source (this repo) or install the upstream binary:
-> ```bash
-> cargo install agent-code   # upstream binary — installs 'agent.exe' (Windows) / 'agent' (Unix), NOT 'agent-code'
-> ```
-> This repo (`ultraworkers/claw-code`) is **build-from-source only** — follow the steps below.
+The fork inherits that foundation, but it also inherits a bias: parts of the codebase, docs, defaults, naming, and examples still make Anthropic feel like the conceptual center of the harness even when multiple providers are supported.
 
-```bash
-# 1. Clone and build
-git clone https://github.com/ultraworkers/claw-code
-cd claw-code/rust
-cargo build --workspace
+## Work done so far
 
-# 2. Set your API key (Anthropic API key — not a Claude subscription)
-export ANTHROPIC_API_KEY="sk-ant-..."
+Recent work in this fork has been aimed at making provider behavior less surprising and more operationally honest.
 
-# 3. Verify everything is wired correctly
-./target/debug/claw doctor
+- Provider-routing fixes:
+  - explicit OpenAI-compatible model families are routed more reliably
+  - Gemini-style model selection was tested through the OpenAI-compatible path
+  - token-limit handling was improved for provider-prefixed OpenAI models
 
-# 4. Run a prompt
-./target/debug/claw prompt "say hello"
-```
+- Config and env loading improvements:
+  - repo-local `.claw` config is loaded more consistently
+  - config-defined `env` values can be applied into runtime credential lookup
+  - prompt/status paths now resolve the effective model more consistently from config
 
-> [!NOTE]
-> **Windows (PowerShell):** the binary is `claw.exe`, not `claw`. Use `.\target\debug\claw.exe` or run `cargo run -- prompt "say hello"` to skip the path lookup.
+- Auth-health and provider-awareness improvements:
+  - doctor/auth checks now look at the resolved model/provider rather than assuming Anthropic first
+  - OpenAI-compatible auth reporting is clearer when the selected model is not Anthropic
 
-### Windows setup
+- Benchmark and eval work:
+  - `claw-code2` was benchmarked against OpenAI models including `openai/gpt-5.4`
+  - canonical Claude Code was benchmarked against `claude-sonnet-4-6`
+  - the eval work showed that harness behavior, not just model quality, materially affects outcomes
 
-**PowerShell is a supported Windows path.** Use whichever shell works for you. The common onboarding issues on Windows are:
+## Current state
 
-1. **Install Rust first** — download from <https://rustup.rs/> and run the installer. Close and reopen your terminal when it finishes.
-2. **Verify Rust is on PATH:**
-   ```powershell
-   cargo --version
-   ```
-   If this fails, reopen your terminal or run the PATH setup from the Rust installer output, then retry.
-3. **Clone and build** (works in PowerShell, Git Bash, or WSL):
-   ```powershell
-   git clone https://github.com/ultraworkers/claw-code
-   cd claw-code/rust
-   cargo build --workspace
-   ```
-4. **Run** (PowerShell — note `.exe` and backslash):
-   ```powershell
-   $env:ANTHROPIC_API_KEY = "sk-ant-..."
-   .\target\debug\claw.exe prompt "say hello"
-   ```
+The direction is provider-agnostic. The current implementation is not fully there yet.
 
-**Git Bash / WSL** are optional alternatives, not requirements. If you prefer bash-style paths (`/c/Users/you/...` instead of `C:\Users\you\...`), Git Bash (ships with Git for Windows) works well. In Git Bash, the `MINGW64` prompt is expected and normal — not a broken install.
+What is already true:
 
-> [!NOTE]
-> **Auth:** claw requires an **API key** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) — Claude subscription login is not a supported auth path.
+- the harness can route beyond Anthropic
+- OpenAI-compatible usage is real, not hypothetical
+- local and MaaS backends can reasonably be treated as OpenAI-compatible targets
+- eval work is already being used to compare harness behavior across providers
 
-Run the workspace test suite:
+What is not fully solved yet:
 
-```bash
-cd rust
-cargo test --workspace
-```
+- docs still skew Anthropic-first in tone and examples
+- some naming and defaults remain Anthropic-native
+- provider, auth, model identity, and transport concerns are still too intertwined in places
+- some provider-specific assumptions still leak into UX and code structure
+
+That residue is a cleanup target, not something to hide.
 
 ## Documentation map
 
-- [`USAGE.md`](./USAGE.md) — quick commands, auth, sessions, config, parity harness
-- [`rust/README.md`](./rust/README.md) — crate map, CLI surface, features, workspace layout
-- [`PARITY.md`](./PARITY.md) — parity status for the Rust port
-- [`rust/MOCK_PARITY_HARNESS.md`](./rust/MOCK_PARITY_HARNESS.md) — deterministic mock-service harness details
-- [`ROADMAP.md`](./ROADMAP.md) — active roadmap and open cleanup work
-- [`PHILOSOPHY.md`](./PHILOSOPHY.md) — why the project exists and how it is operated
+- [`USAGE.md`](./USAGE.md) — current CLI usage and auth/setup guidance
+- [`rust/README.md`](./rust/README.md) — Rust workspace overview
+- [`PARITY.md`](./PARITY.md) — parity tracking and migration notes
+- [`ROADMAP.md`](./ROADMAP.md) — backlog and cleanup roadmap
+- [`docs/agent-best-practices.md`](./docs/agent-best-practices.md) — future-agent handoff and repo hygiene guide
 
-## Ecosystem
+## GitHub management guidelines
 
-Claw Code is built in the open alongside the broader UltraWorkers toolchain:
+This fork has two remotes:
 
-- [clawhip](https://github.com/Yeachan-Heo/clawhip)
-- [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)
-- [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode)
-- [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex)
-- [UltraWorkers Discord](https://discord.gg/5TUQKqFWd)
+- `origin` — your fork, `WeLiveToServe/claw-code2`
+- `upstream` — original source project, `ultraworkers/claw-code`
 
-## Ownership / affiliation disclaimer
+Use that split deliberately:
 
-- This repository does **not** claim ownership of the original Claude Code source material.
-- This repository is **not affiliated with, endorsed by, or maintained by Anthropic**.
+- treat `upstream` as the baseline for comparison and future sync work
+- treat `origin` as the place for fork-specific hardening, eval infrastructure, and provider-agnostic cleanup
+
+Commit hygiene for this repo:
+
+- stage files explicitly; do not rely on blanket `git add .`
+- keep commits source-focused and reviewable
+- never commit local secrets, sessions, plugin install artifacts, or machine-local `.claw` runtime state
+- prefer repo-safe shared config in tracked files and local credentials in ignored local config
+
+What should generally be tracked:
+
+- source changes
+- tests
+- docs
+- non-secret shared settings such as tracked examples or shared aliases
+
+What should not be tracked:
+
+- `settings.local.json`
+- session transcripts
+- plugin install registries or installed plugin copies
+- machine-local paths
+- API keys or bearer tokens
+
+## Working principle for provider support
+
+The preferred long-term shape of this repo is:
+
+- model identity is separate from provider transport
+- provider routing is separate from auth resolution
+- auth resolution is separate from runtime prompt/tool policy
+- OpenAI-compatible backends are treated as a broad class, not as one-off hacks
+
+In practice, that means commercial APIs, MaaS endpoints, and local model servers should all fit into the harness cleanly without Anthropic-specific assumptions leaking into unrelated paths.
+
+## Important limitation statement
+
+If you are reading this repo as if it were already a perfectly neutral multi-provider harness, do not assume that yet.
+
+It is better to think of `claw-code2` as:
+
+- a strong Rust agent harness
+- already improved for multi-provider use
+- still carrying Anthropic-centric residue that should be removed carefully
+
+That is the fork’s current engineering reality.

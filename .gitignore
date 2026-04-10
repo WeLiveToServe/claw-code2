@@ -5,3 +5,8 @@ archive/
 # Claude Code local artifacts
 .claude/settings.local.json
 .claude/sessions/
+.claw/settings.local.json
+.claw/sessions/
+rust/.claw/settings.local.json
+rust/.claw/sessions/
+rust/.claw/plugins/

@@ -173,7 +173,10 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     // route to the correct provider regardless of which auth env vars are set.
     // Without this, detect_provider_kind falls through to the auth-sniffer
     // order and misroutes to Anthropic if ANTHROPIC_API_KEY is present.
-    if canonical.starts_with("openai/") || canonical.starts_with("gpt-") {
+    if canonical.starts_with("openai/")
+        || canonical.starts_with("gpt-")
+        || canonical.starts_with("gemini-")
+    {
         return Some(ProviderMetadata {
             provider: ProviderKind::OpenAi,
             auth_env: "OPENAI_API_KEY",
@@ -240,7 +243,10 @@ pub fn max_tokens_for_model_with_override(model: &str, plugin_override: Option<u
 #[must_use]
 pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
     let canonical = resolve_model_alias(model);
-    match canonical.as_str() {
+    let normalized = canonical
+        .strip_prefix("openai/")
+        .unwrap_or(canonical.as_str());
+    match normalized {
         "claude-opus-4-6" => Some(ModelTokenLimit {
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
@@ -248,6 +254,10 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
         "claude-sonnet-4-6" | "claude-haiku-4-5-20251213" => Some(ModelTokenLimit {
             max_output_tokens: 64_000,
             context_window_tokens: 200_000,
+        }),
+        "gpt-4.1" | "gpt-4.1-mini" | "gpt-4.1-nano" => Some(ModelTokenLimit {
+            max_output_tokens: 32_768,
+            context_window_tokens: 1_047_576,
         }),
         "grok-3" | "grok-3-mini" => Some(ModelTokenLimit {
             max_output_tokens: 64_000,
@@ -511,6 +521,22 @@ mod tests {
     }
 
     #[test]
+    fn gemini_prefix_routes_to_openai_not_anthropic() {
+        let meta = super::metadata_for_model("gemini-2.5-flash")
+            .expect("gemini-* prefix must resolve to OpenAI-compatible metadata");
+        assert_eq!(meta.provider, ProviderKind::OpenAi);
+        assert_eq!(meta.auth_env, "OPENAI_API_KEY");
+        assert_eq!(meta.base_url_env, "OPENAI_BASE_URL");
+
+        let kind = detect_provider_kind("gemini-2.5-flash");
+        assert_eq!(
+            kind,
+            ProviderKind::OpenAi,
+            "gemini-* prefix must win over auth-sniffer order"
+        );
+    }
+
+    #[test]
     fn qwen_prefix_routes_to_dashscope_not_anthropic() {
         // User request from Discord #clawcode-get-help: web3g wants to use
         // Qwen 3.6 Plus via native Alibaba DashScope API (not OpenRouter,
@@ -544,6 +570,17 @@ mod tests {
     fn keeps_existing_max_token_heuristic() {
         assert_eq!(max_tokens_for_model("opus"), 32_000);
         assert_eq!(max_tokens_for_model("grok-3"), 64_000);
+    }
+
+    #[test]
+    fn gpt_4_1_family_uses_openai_token_limits_even_with_prefix() {
+        assert_eq!(max_tokens_for_model("gpt-4.1-mini"), 32_768);
+        assert_eq!(max_tokens_for_model("openai/gpt-4.1-mini"), 32_768);
+
+        let limits = model_token_limit("openai/gpt-4.1-mini")
+            .expect("gpt-4.1-mini should expose token limits");
+        assert_eq!(limits.max_output_tokens, 32_768);
+        assert_eq!(limits.context_window_tokens, 1_047_576);
     }
 
     #[test]
