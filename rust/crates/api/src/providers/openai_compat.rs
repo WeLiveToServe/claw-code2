@@ -29,8 +29,10 @@ const DEFAULT_MAX_RETRIES: u32 = 8;
 pub struct OpenAiCompatConfig {
     pub provider_name: &'static str,
     pub api_key_env: &'static str,
+    pub credential_env_vars: &'static [&'static str],
     pub base_url_env: &'static str,
     pub default_base_url: &'static str,
+    pub request_stream_usage: bool,
 }
 
 const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
@@ -43,8 +45,10 @@ impl OpenAiCompatConfig {
         Self {
             provider_name: "xAI",
             api_key_env: "XAI_API_KEY",
+            credential_env_vars: XAI_ENV_VARS,
             base_url_env: "XAI_BASE_URL",
             default_base_url: DEFAULT_XAI_BASE_URL,
+            request_stream_usage: false,
         }
     }
 
@@ -53,8 +57,10 @@ impl OpenAiCompatConfig {
         Self {
             provider_name: "OpenAI",
             api_key_env: "OPENAI_API_KEY",
+            credential_env_vars: OPENAI_ENV_VARS,
             base_url_env: "OPENAI_BASE_URL",
             default_base_url: DEFAULT_OPENAI_BASE_URL,
+            request_stream_usage: true,
         }
     }
 
@@ -67,19 +73,16 @@ impl OpenAiCompatConfig {
         Self {
             provider_name: "DashScope",
             api_key_env: "DASHSCOPE_API_KEY",
+            credential_env_vars: DASHSCOPE_ENV_VARS,
             base_url_env: "DASHSCOPE_BASE_URL",
             default_base_url: DEFAULT_DASHSCOPE_BASE_URL,
+            request_stream_usage: false,
         }
     }
 
     #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
-        match self.provider_name {
-            "xAI" => XAI_ENV_VARS,
-            "OpenAI" => OPENAI_ENV_VARS,
-            "DashScope" => DASHSCOPE_ENV_VARS,
-            _ => &[],
-        }
+        self.credential_env_vars
     }
 }
 
@@ -1061,7 +1064,7 @@ fn openai_tool_choice(tool_choice: &ToolChoice) -> Value {
 }
 
 fn should_request_stream_usage(config: OpenAiCompatConfig) -> bool {
-    matches!(config.provider_name, "OpenAI")
+    config.request_stream_usage
 }
 
 fn normalize_response(

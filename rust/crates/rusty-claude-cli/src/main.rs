@@ -24,11 +24,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
-    detect_provider_kind, oauth_token_is_expired, resolve_startup_auth_source, AnthropicClient,
-    AuthSource, ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest,
-    MessageResponse, OutputContentBlock, PromptCache, ProviderClient as ApiProviderClient,
-    ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
-    ToolResultContentBlock,
+    detect_provider_kind, oauth_token_is_expired, resolve_startup_auth_source,
+    resolved_metadata_for_model, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
+    InputMessage, MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
+    ProviderClient as ApiProviderClient, ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice,
+    ToolDefinition, ToolResultContentBlock,
 };
 
 use commands::{
@@ -79,6 +79,7 @@ const PRIMARY_SESSION_EXTENSION: &str = "jsonl";
 const LEGACY_SESSION_EXTENSION: &str = "json";
 const LATEST_SESSION_REFERENCE: &str = "latest";
 const SESSION_REFERENCE_ALIASES: &[&str] = &[LATEST_SESSION_REFERENCE, "last", "recent"];
+const MODEL_OVERRIDE_ENV_VARS: &[&str] = &["CLAW_MODEL", "ANTHROPIC_MODEL"];
 const CLI_OPTION_SUGGESTIONS: &[&str] = &[
     "--help",
     "-h",
@@ -980,13 +981,8 @@ fn levenshtein_distance(left: &str, right: &str) -> usize {
     previous[right_chars.len()]
 }
 
-fn resolve_model_alias(model: &str) -> &str {
-    match model {
-        "opus" => "claude-opus-4-6",
-        "sonnet" => "claude-sonnet-4-6",
-        "haiku" => "claude-haiku-4-5-20251213",
-        _ => model,
-    }
+fn resolve_model_alias(model: &str) -> String {
+    api::resolve_model_alias(model)
 }
 
 /// Resolve a model name through user-defined config aliases first, then fall
@@ -995,9 +991,9 @@ fn resolve_model_alias(model: &str) -> &str {
 fn resolve_model_alias_with_config(model: &str) -> String {
     let trimmed = model.trim();
     if let Some(resolved) = config_alias_for_current_dir(trimmed) {
-        return resolve_model_alias(&resolved).to_string();
+        return resolve_model_alias(&resolved);
     }
-    resolve_model_alias(trimmed).to_string()
+    resolve_model_alias(trimmed)
 }
 
 fn config_alias_for_current_dir(alias: &str) -> Option<String> {
@@ -1087,15 +1083,20 @@ fn config_model_for_current_dir() -> Option<String> {
     loader.load().ok()?.model().map(ToOwned::to_owned)
 }
 
+fn configured_model_override() -> Option<String> {
+    MODEL_OVERRIDE_ENV_VARS.iter().find_map(|key| {
+        env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 fn resolve_cli_model_with_config(cli_model: String, config_model: Option<String>) -> String {
     if cli_model != DEFAULT_MODEL {
         return cli_model;
     }
-    if let Some(env_model) = env::var("ANTHROPIC_MODEL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(env_model) = configured_model_override() {
         return resolve_model_alias_with_config(&env_model);
     }
     if let Some(config_model) = config_model.filter(|value| !value.trim().is_empty()) {
@@ -1143,25 +1144,8 @@ fn apply_runtime_env_overrides_for_current_dir() {
     let _ = apply_runtime_env_from_config(&runtime_config);
 }
 
-fn openai_compat_auth_envs_for_model(model: &str) -> (&'static str, &'static str, &'static str) {
-    let canonical = api::resolve_model_alias(model);
-    if canonical.starts_with("qwen/") || canonical.starts_with("qwen-") {
-        ("DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL", "dashscope")
-    } else {
-        ("OPENAI_API_KEY", "OPENAI_BASE_URL", "openai-compatible")
-    }
-}
-
-fn provider_label(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Anthropic => "anthropic",
-        ProviderKind::Xai => "xai",
-        ProviderKind::OpenAi => "openai",
-    }
-}
-
 fn format_connected_line(model: &str) -> String {
-    let provider = provider_label(detect_provider_kind(model));
+    let provider = resolved_metadata_for_model(model).provider_label;
     format!("Connected: {model} via {provider}")
 }
 
@@ -1583,7 +1567,8 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
             .and_then(runtime::RuntimeConfig::model)
             .map(ToOwned::to_owned),
     );
-    match detect_provider_kind(&resolved_model) {
+    let provider_metadata = resolved_metadata_for_model(&resolved_model);
+    match provider_metadata.provider {
         ProviderKind::Anthropic => {
             let api_key_present = env_var_present("ANTHROPIC_API_KEY");
             let auth_token_present = env_var_present("ANTHROPIC_AUTH_TOKEN");
@@ -1598,7 +1583,7 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                     });
                     let mut details = vec![
                         format!("Resolved model    {resolved_model}"),
-                        "Provider          anthropic".to_string(),
+                        format!("Provider          {}", provider_metadata.provider_label),
                         format!(
                             "Environment       api_key={} auth_token={}",
                             if api_key_present { "present" } else { "absent" },
@@ -1648,7 +1633,10 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                     )
                     .with_details(details)
                     .with_data(Map::from_iter([
-                        ("provider".to_string(), json!("anthropic")),
+                        (
+                            "provider".to_string(),
+                            json!(provider_metadata.provider_label),
+                        ),
                         ("resolved_model".to_string(), json!(resolved_model)),
                         ("api_key_present".to_string(), json!(api_key_present)),
                         ("auth_token_present".to_string(), json!(auth_token_present)),
@@ -1680,7 +1668,7 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                 )
                 .with_details(vec![
                     format!("Resolved model    {resolved_model}"),
-                    "Provider          anthropic".to_string(),
+                    format!("Provider          {}", provider_metadata.provider_label),
                     format!(
                         "Environment       api_key={} auth_token={}",
                         if api_key_present { "present" } else { "absent" },
@@ -1692,7 +1680,10 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                     ),
                 ])
                 .with_data(Map::from_iter([
-                    ("provider".to_string(), json!("anthropic")),
+                    (
+                        "provider".to_string(),
+                        json!(provider_metadata.provider_label),
+                    ),
                     ("resolved_model".to_string(), json!(resolved_model)),
                     ("api_key_present".to_string(), json!(api_key_present)),
                     ("auth_token_present".to_string(), json!(auth_token_present)),
@@ -1708,7 +1699,10 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                     format!("failed to inspect saved credentials: {error}"),
                 )
                 .with_data(Map::from_iter([
-                    ("provider".to_string(), json!("anthropic")),
+                    (
+                        "provider".to_string(),
+                        json!(provider_metadata.provider_label),
+                    ),
                     ("resolved_model".to_string(), json!(resolved_model)),
                     ("api_key_present".to_string(), json!(api_key_present)),
                     ("auth_token_present".to_string(), json!(auth_token_present)),
@@ -1722,8 +1716,10 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
             }
         }
         ProviderKind::Xai => {
-            let api_key_present = env_var_present("XAI_API_KEY");
-            let base_url_present = env_var_present("XAI_BASE_URL");
+            let api_key_env = provider_metadata.auth_env;
+            let base_url_env = provider_metadata.base_url_env;
+            let api_key_present = env_var_present(api_key_env);
+            let base_url_present = env_var_present(base_url_env);
             DiagnosticCheck::new(
                 "Auth",
                 if api_key_present {
@@ -1739,45 +1735,7 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
             )
             .with_details(vec![
                 format!("Resolved model    {resolved_model}"),
-                "Provider          xai".to_string(),
-                format!(
-                    "Environment       XAI_API_KEY={} XAI_BASE_URL={}",
-                    if api_key_present { "present" } else { "absent" },
-                    if base_url_present {
-                        "present"
-                    } else {
-                        "absent"
-                    }
-                ),
-            ])
-            .with_data(Map::from_iter([
-                ("provider".to_string(), json!("xai")),
-                ("resolved_model".to_string(), json!(resolved_model)),
-                ("api_key_present".to_string(), json!(api_key_present)),
-                ("base_url_present".to_string(), json!(base_url_present)),
-            ]))
-        }
-        ProviderKind::OpenAi => {
-            let (api_key_env, base_url_env, provider_name) =
-                openai_compat_auth_envs_for_model(&resolved_model);
-            let api_key_present = env_var_present(api_key_env);
-            let base_url_present = env_var_present(base_url_env);
-            DiagnosticCheck::new(
-                "Auth",
-                if api_key_present {
-                    DiagnosticLevel::Ok
-                } else {
-                    DiagnosticLevel::Warn
-                },
-                if api_key_present {
-                    format!("{provider_name} credentials are configured")
-                } else {
-                    format!("no {api_key_env} credential was found for the resolved model")
-                },
-            )
-            .with_details(vec![
-                format!("Resolved model    {resolved_model}"),
-                format!("Provider          {provider_name}"),
+                format!("Provider          {}", provider_metadata.provider_label),
                 format!(
                     "Environment       {api_key_env}={} {base_url_env}={}",
                     if api_key_present { "present" } else { "absent" },
@@ -1789,7 +1747,51 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                 ),
             ])
             .with_data(Map::from_iter([
-                ("provider".to_string(), json!(provider_name)),
+                (
+                    "provider".to_string(),
+                    json!(provider_metadata.provider_label),
+                ),
+                ("resolved_model".to_string(), json!(resolved_model)),
+                ("api_key_env".to_string(), json!(api_key_env)),
+                ("base_url_env".to_string(), json!(base_url_env)),
+                ("api_key_present".to_string(), json!(api_key_present)),
+                ("base_url_present".to_string(), json!(base_url_present)),
+            ]))
+        }
+        ProviderKind::OpenAi => {
+            let api_key_env = provider_metadata.auth_env;
+            let base_url_env = provider_metadata.base_url_env;
+            let provider_label = provider_metadata.provider_label;
+            let api_key_present = env_var_present(api_key_env);
+            let base_url_present = env_var_present(base_url_env);
+            DiagnosticCheck::new(
+                "Auth",
+                if api_key_present {
+                    DiagnosticLevel::Ok
+                } else {
+                    DiagnosticLevel::Warn
+                },
+                if api_key_present {
+                    format!("{provider_label} credentials are configured")
+                } else {
+                    format!("no {api_key_env} credential was found for the resolved model")
+                },
+            )
+            .with_details(vec![
+                format!("Resolved model    {resolved_model}"),
+                format!("Provider          {provider_label}"),
+                format!(
+                    "Environment       {api_key_env}={} {base_url_env}={}",
+                    if api_key_present { "present" } else { "absent" },
+                    if base_url_present {
+                        "present"
+                    } else {
+                        "absent"
+                    }
+                ),
+            ])
+            .with_data(Map::from_iter([
+                ("provider".to_string(), json!(provider_label)),
                 ("resolved_model".to_string(), json!(resolved_model)),
                 ("api_key_env".to_string(), json!(api_key_env)),
                 ("base_url_env".to_string(), json!(base_url_env)),
@@ -10307,6 +10309,24 @@ mod tests {
     }
 
     #[test]
+    fn format_connected_line_renders_openai_compatible_provider_for_gemini_model() {
+        let model = "gemini-2.5-flash";
+
+        let line = format_connected_line(model);
+
+        assert_eq!(line, "Connected: gemini-2.5-flash via openai-compatible");
+    }
+
+    #[test]
+    fn format_connected_line_renders_dashscope_provider_for_qwen_model() {
+        let model = "qwen-plus";
+
+        let line = format_connected_line(model);
+
+        assert_eq!(line, "Connected: qwen-plus via dashscope");
+    }
+
+    #[test]
     fn resolve_repl_model_returns_user_supplied_model_unchanged_when_explicit() {
         let user_model = "claude-sonnet-4-6".to_string();
 
@@ -10316,13 +10336,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_repl_model_falls_back_to_anthropic_model_env_when_default() {
+    fn resolve_repl_model_prefers_provider_neutral_claw_model_env_when_default() {
         let _guard = env_lock();
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
         let config_home = root.join("config");
         fs::create_dir_all(&config_home).expect("config home dir");
         std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("CLAW_MODEL");
+        std::env::remove_var("ANTHROPIC_MODEL");
+        std::env::set_var("CLAW_MODEL", "grok-mini");
+
+        let resolved = with_current_dir(&root, || resolve_repl_model(DEFAULT_MODEL.to_string()));
+
+        assert_eq!(resolved, "grok-3-mini");
+
+        std::env::remove_var("CLAW_MODEL");
+        std::env::remove_var("ANTHROPIC_MODEL");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn resolve_repl_model_falls_back_to_anthropic_model_env_when_claw_model_unset() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        let config_home = root.join("config");
+        fs::create_dir_all(&config_home).expect("config home dir");
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("CLAW_MODEL");
         std::env::remove_var("ANTHROPIC_MODEL");
         std::env::set_var("ANTHROPIC_MODEL", "sonnet");
 
@@ -10330,6 +10373,28 @@ mod tests {
 
         assert_eq!(resolved, "claude-sonnet-4-6");
 
+        std::env::remove_var("CLAW_MODEL");
+        std::env::remove_var("ANTHROPIC_MODEL");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn resolve_repl_model_prefers_claw_model_over_legacy_anthropic_model_env() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        let config_home = root.join("config");
+        fs::create_dir_all(&config_home).expect("config home dir");
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_MODEL", "gemini-2.5-flash");
+        std::env::set_var("ANTHROPIC_MODEL", "sonnet");
+
+        let resolved = with_current_dir(&root, || resolve_repl_model(DEFAULT_MODEL.to_string()));
+
+        assert_eq!(resolved, "gemini-2.5-flash");
+
+        std::env::remove_var("CLAW_MODEL");
         std::env::remove_var("ANTHROPIC_MODEL");
         std::env::remove_var("CLAW_CONFIG_HOME");
         fs::remove_dir_all(root).expect("cleanup temp dir");
@@ -10343,12 +10408,14 @@ mod tests {
         let config_home = root.join("config");
         fs::create_dir_all(&config_home).expect("config home dir");
         std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("CLAW_MODEL");
         std::env::remove_var("ANTHROPIC_MODEL");
 
         let resolved = with_current_dir(&root, || resolve_repl_model(DEFAULT_MODEL.to_string()));
 
         assert_eq!(resolved, DEFAULT_MODEL);
 
+        std::env::remove_var("CLAW_MODEL");
         std::env::remove_var("CLAW_CONFIG_HOME");
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
@@ -10368,8 +10435,10 @@ mod tests {
         .expect("project model config should write");
 
         let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_claw_model = std::env::var("CLAW_MODEL").ok();
         let original_anthropic_model = std::env::var("ANTHROPIC_MODEL").ok();
         std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("CLAW_MODEL");
         std::env::remove_var("ANTHROPIC_MODEL");
 
         let resolved = with_current_dir(&cwd, || resolve_repl_model(DEFAULT_MODEL.to_string()));
@@ -10377,6 +10446,10 @@ mod tests {
         match original_config_home {
             Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
             None => std::env::remove_var("CLAW_CONFIG_HOME"),
+        }
+        match original_claw_model {
+            Some(value) => std::env::set_var("CLAW_MODEL", value),
+            None => std::env::remove_var("CLAW_MODEL"),
         }
         match original_anthropic_model {
             Some(value) => std::env::set_var("ANTHROPIC_MODEL", value),
@@ -10506,11 +10579,13 @@ mod tests {
         .expect("local env config should write");
 
         let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_claw_model = std::env::var("CLAW_MODEL").ok();
         let original_openai_api_key = std::env::var("OPENAI_API_KEY").ok();
         let original_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
         let original_anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok();
         let original_anthropic_auth_token = std::env::var("ANTHROPIC_AUTH_TOKEN").ok();
         std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("CLAW_MODEL");
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("OPENAI_BASE_URL");
         std::env::remove_var("ANTHROPIC_API_KEY");
@@ -10540,6 +10615,10 @@ mod tests {
         match original_config_home {
             Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
             None => std::env::remove_var("CLAW_CONFIG_HOME"),
+        }
+        match original_claw_model {
+            Some(value) => std::env::set_var("CLAW_MODEL", value),
+            None => std::env::remove_var("CLAW_MODEL"),
         }
         match original_openai_api_key {
             Some(value) => std::env::set_var("OPENAI_API_KEY", value),

@@ -38,9 +38,56 @@ pub enum ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderMetadata {
     pub provider: ProviderKind,
+    pub provider_label: &'static str,
     pub auth_env: &'static str,
     pub base_url_env: &'static str,
     pub default_base_url: &'static str,
+}
+
+const ANTHROPIC_METADATA: ProviderMetadata = ProviderMetadata {
+    provider: ProviderKind::Anthropic,
+    provider_label: "anthropic",
+    auth_env: "ANTHROPIC_API_KEY",
+    base_url_env: "ANTHROPIC_BASE_URL",
+    default_base_url: anthropic::DEFAULT_BASE_URL,
+};
+
+const XAI_METADATA: ProviderMetadata = ProviderMetadata {
+    provider: ProviderKind::Xai,
+    provider_label: "xai",
+    auth_env: "XAI_API_KEY",
+    base_url_env: "XAI_BASE_URL",
+    default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
+};
+
+const OPENAI_COMPAT_METADATA: ProviderMetadata = ProviderMetadata {
+    provider: ProviderKind::OpenAi,
+    provider_label: "openai-compatible",
+    auth_env: "OPENAI_API_KEY",
+    base_url_env: "OPENAI_BASE_URL",
+    default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+};
+
+const DASHSCOPE_METADATA: ProviderMetadata = ProviderMetadata {
+    provider: ProviderKind::OpenAi,
+    provider_label: "dashscope",
+    auth_env: "DASHSCOPE_API_KEY",
+    base_url_env: "DASHSCOPE_BASE_URL",
+    default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
+};
+
+impl ProviderMetadata {
+    #[must_use]
+    pub fn openai_compat_config(self) -> Option<openai_compat::OpenAiCompatConfig> {
+        match self.provider {
+            ProviderKind::Anthropic => None,
+            ProviderKind::Xai => Some(openai_compat::OpenAiCompatConfig::xai()),
+            ProviderKind::OpenAi if self.auth_env == "DASHSCOPE_API_KEY" => {
+                Some(openai_compat::OpenAiCompatConfig::dashscope())
+            }
+            ProviderKind::OpenAi => Some(openai_compat::OpenAiCompatConfig::openai()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,78 +97,14 @@ pub struct ModelTokenLimit {
 }
 
 const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
-    (
-        "opus",
-        ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        },
-    ),
-    (
-        "sonnet",
-        ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        },
-    ),
-    (
-        "haiku",
-        ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        },
-    ),
-    (
-        "grok",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
-    ),
-    (
-        "grok-3",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
-    ),
-    (
-        "grok-mini",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
-    ),
-    (
-        "grok-3-mini",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
-    ),
-    (
-        "grok-2",
-        ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        },
-    ),
+    ("opus", ANTHROPIC_METADATA),
+    ("sonnet", ANTHROPIC_METADATA),
+    ("haiku", ANTHROPIC_METADATA),
+    ("grok", XAI_METADATA),
+    ("grok-3", XAI_METADATA),
+    ("grok-mini", XAI_METADATA),
+    ("grok-3-mini", XAI_METADATA),
+    ("grok-2", XAI_METADATA),
 ];
 
 #[must_use]
@@ -154,20 +137,10 @@ pub fn resolve_model_alias(model: &str) -> String {
 pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     let canonical = resolve_model_alias(model);
     if canonical.starts_with("claude") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::Anthropic,
-            auth_env: "ANTHROPIC_API_KEY",
-            base_url_env: "ANTHROPIC_BASE_URL",
-            default_base_url: anthropic::DEFAULT_BASE_URL,
-        });
+        return Some(ANTHROPIC_METADATA);
     }
     if canonical.starts_with("grok") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::Xai,
-            auth_env: "XAI_API_KEY",
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
-        });
+        return Some(XAI_METADATA);
     }
     // Explicit provider-namespaced models (e.g. "openai/gpt-4.1-mini") must
     // route to the correct provider regardless of which auth env vars are set.
@@ -177,12 +150,7 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
         || canonical.starts_with("gpt-")
         || canonical.starts_with("gemini-")
     {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "OPENAI_API_KEY",
-            base_url_env: "OPENAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
-        });
+        return Some(OPENAI_COMPAT_METADATA);
     }
     // Alibaba DashScope compatible-mode endpoint. Routes qwen/* and bare
     // qwen-* model names (qwen-max, qwen-plus, qwen-turbo, qwen-qwq, etc.)
@@ -190,14 +158,24 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     // Uses the OpenAi provider kind because DashScope speaks the OpenAI REST
     // shape — only the base URL and auth env var differ.
     if canonical.starts_with("qwen/") || canonical.starts_with("qwen-") {
-        return Some(ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "DASHSCOPE_API_KEY",
-            base_url_env: "DASHSCOPE_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_DASHSCOPE_BASE_URL,
-        });
+        return Some(DASHSCOPE_METADATA);
     }
     None
+}
+
+#[must_use]
+pub const fn fallback_metadata_for_provider(kind: ProviderKind) -> ProviderMetadata {
+    match kind {
+        ProviderKind::Anthropic => ANTHROPIC_METADATA,
+        ProviderKind::Xai => XAI_METADATA,
+        ProviderKind::OpenAi => OPENAI_COMPAT_METADATA,
+    }
+}
+
+#[must_use]
+pub fn resolved_metadata_for_model(model: &str) -> ProviderMetadata {
+    metadata_for_model(model)
+        .unwrap_or_else(|| fallback_metadata_for_provider(detect_provider_kind(model)))
 }
 
 #[must_use]
@@ -525,6 +503,7 @@ mod tests {
         let meta = super::metadata_for_model("gemini-2.5-flash")
             .expect("gemini-* prefix must resolve to OpenAI-compatible metadata");
         assert_eq!(meta.provider, ProviderKind::OpenAi);
+        assert_eq!(meta.provider_label, "openai-compatible");
         assert_eq!(meta.auth_env, "OPENAI_API_KEY");
         assert_eq!(meta.base_url_env, "OPENAI_BASE_URL");
 
@@ -547,6 +526,7 @@ mod tests {
         let meta = super::metadata_for_model("qwen/qwen-max")
             .expect("qwen/ prefix must resolve to DashScope metadata");
         assert_eq!(meta.provider, ProviderKind::OpenAi);
+        assert_eq!(meta.provider_label, "dashscope");
         assert_eq!(meta.auth_env, "DASHSCOPE_API_KEY");
         assert_eq!(meta.base_url_env, "DASHSCOPE_BASE_URL");
         assert!(meta.default_base_url.contains("dashscope.aliyuncs.com"));
@@ -564,6 +544,25 @@ mod tests {
             ProviderKind::OpenAi,
             "qwen/ prefix must win over auth-sniffer order"
         );
+    }
+
+    #[test]
+    fn metadata_builds_matching_openai_compatible_transport_configs() {
+        let openai_meta = super::metadata_for_model("gemini-2.5-flash")
+            .expect("gemini-* prefix must resolve to OpenAI-compatible metadata");
+        let openai_config = openai_meta
+            .openai_compat_config()
+            .expect("OpenAI-compatible metadata should yield a transport config");
+        assert_eq!(openai_config.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(openai_config.base_url_env, "OPENAI_BASE_URL");
+
+        let dashscope_meta = super::metadata_for_model("qwen-plus")
+            .expect("qwen-* prefix must resolve to DashScope metadata");
+        let dashscope_config = dashscope_meta
+            .openai_compat_config()
+            .expect("DashScope metadata should yield a transport config");
+        assert_eq!(dashscope_config.api_key_env, "DASHSCOPE_API_KEY");
+        assert_eq!(dashscope_config.base_url_env, "DASHSCOPE_BASE_URL");
     }
 
     #[test]

@@ -23,25 +23,22 @@ impl ProviderClient {
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        match providers::detect_provider_kind(&resolved_model) {
+        let metadata = providers::resolved_metadata_for_model(&resolved_model);
+        match metadata.provider {
             ProviderKind::Anthropic => Ok(Self::Anthropic(match anthropic_auth {
                 Some(auth) => AnthropicClient::from_auth(auth),
                 None => AnthropicClient::from_env()?,
             })),
-            ProviderKind::Xai => Ok(Self::Xai(OpenAiCompatClient::from_env(
-                OpenAiCompatConfig::xai(),
-            )?)),
-            ProviderKind::OpenAi => {
-                // DashScope models (qwen-*) also return ProviderKind::OpenAi because they
-                // speak the OpenAI wire format, but they need the DashScope config which
-                // reads DASHSCOPE_API_KEY and points at dashscope.aliyuncs.com.
-                let config = match providers::metadata_for_model(&resolved_model) {
-                    Some(meta) if meta.auth_env == "DASHSCOPE_API_KEY" => {
-                        OpenAiCompatConfig::dashscope()
-                    }
-                    _ => OpenAiCompatConfig::openai(),
-                };
-                Ok(Self::OpenAi(OpenAiCompatClient::from_env(config)?))
+            ProviderKind::Xai | ProviderKind::OpenAi => {
+                let config = metadata
+                    .openai_compat_config()
+                    .expect("non-Anthropic metadata should produce an OpenAI-compatible config");
+                let client = OpenAiCompatClient::from_env(config)?;
+                Ok(match metadata.provider {
+                    ProviderKind::Xai => Self::Xai(client),
+                    ProviderKind::OpenAi => Self::OpenAi(client),
+                    ProviderKind::Anthropic => unreachable!(),
+                })
             }
         }
     }
