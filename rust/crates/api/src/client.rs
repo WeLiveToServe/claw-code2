@@ -2,7 +2,7 @@ use crate::error::ApiError;
 use crate::prompt_cache::{PromptCache, PromptCacheRecord, PromptCacheStats};
 use crate::providers::anthropic::{self, AnthropicClient, AuthSource};
 use crate::providers::openai_compat::{self, OpenAiCompatClient, OpenAiCompatConfig};
-use crate::providers::{self, ProviderKind};
+use crate::providers::{self, ProviderKind, ResolvedBackend};
 use crate::types::{MessageRequest, MessageResponse, StreamEvent};
 
 #[allow(clippy::large_enum_variant)]
@@ -15,26 +15,52 @@ pub enum ProviderClient {
 
 impl ProviderClient {
     pub fn from_model(model: &str) -> Result<Self, ApiError> {
-        Self::from_model_with_anthropic_auth(model, None)
+        Self::from_model_with_backend_and_anthropic_auth(model, None, None, None)
+    }
+
+    pub fn from_model_with_runtime_config(
+        model: &str,
+        runtime_config: Option<&runtime::RuntimeConfig>,
+        explicit_backend: Option<&str>,
+    ) -> Result<Self, ApiError> {
+        Self::from_model_with_backend_and_anthropic_auth(
+            model,
+            runtime_config,
+            explicit_backend,
+            None,
+        )
     }
 
     pub fn from_model_with_anthropic_auth(
         model: &str,
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
+        Self::from_model_with_backend_and_anthropic_auth(model, None, None, anthropic_auth)
+    }
+
+    pub fn from_model_with_backend_and_anthropic_auth(
+        model: &str,
+        runtime_config: Option<&runtime::RuntimeConfig>,
+        explicit_backend: Option<&str>,
+        anthropic_auth: Option<AuthSource>,
+    ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        let metadata = providers::resolved_metadata_for_model(&resolved_model);
-        match metadata.provider {
-            ProviderKind::Anthropic => Ok(Self::Anthropic(match anthropic_auth {
-                Some(auth) => AnthropicClient::from_auth(auth),
-                None => AnthropicClient::from_env()?,
-            })),
+        let backend = providers::resolve_backend(&resolved_model, runtime_config, explicit_backend)?;
+        match backend.provider {
+            ProviderKind::Anthropic => {
+                let auth = resolve_anthropic_auth_for_backend(&backend, anthropic_auth)?;
+                let base_url = backend
+                    .resolved_base_url()
+                    .map(|resolved| resolved.value)
+                    .unwrap_or_else(anthropic::read_base_url);
+                Ok(Self::Anthropic(AnthropicClient::from_auth(auth).with_base_url(base_url)))
+            }
             ProviderKind::Xai | ProviderKind::OpenAi => {
-                let config = metadata
+                let config = backend
                     .openai_compat_config()
                     .expect("non-Anthropic metadata should produce an OpenAI-compatible config");
                 let client = OpenAiCompatClient::from_env(config)?;
-                Ok(match metadata.provider {
+                Ok(match backend.provider {
                     ProviderKind::Xai => Self::Xai(client),
                     ProviderKind::OpenAi => Self::OpenAi(client),
                     ProviderKind::Anthropic => unreachable!(),
@@ -103,6 +129,53 @@ impl ProviderClient {
     }
 }
 
+fn read_env_non_empty(key: &str) -> Result<Option<String>, ApiError> {
+    match std::env::var(key) {
+        Ok(value) if !value.is_empty() => Ok(Some(value)),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(providers::dotenv_value(key)),
+        Err(error) => Err(ApiError::from(error)),
+    }
+}
+
+fn resolve_anthropic_auth_for_backend(
+    backend: &ResolvedBackend,
+    anthropic_auth: Option<AuthSource>,
+) -> Result<AuthSource, ApiError> {
+    if let Some(auth) = anthropic_auth {
+        return Ok(auth);
+    }
+
+    let uses_default_anthropic_env = backend.auth_env.as_deref() == Some("ANTHROPIC_API_KEY")
+        && backend.auth_token_env.as_deref() == Some("ANTHROPIC_AUTH_TOKEN");
+    if uses_default_anthropic_env {
+        return AuthSource::from_env_or_saved();
+    }
+
+    let api_key = match backend.auth_env.as_deref() {
+        Some(env_key) => read_env_non_empty(env_key)?,
+        None => None,
+    };
+    let bearer_token = match backend.auth_token_env.as_deref() {
+        Some(env_key) => read_env_non_empty(env_key)?,
+        None => None,
+    };
+
+    match (api_key, bearer_token) {
+        (Some(api_key), Some(bearer_token)) => Ok(AuthSource::ApiKeyAndBearer {
+            api_key,
+            bearer_token,
+        }),
+        (Some(api_key), None) => Ok(AuthSource::ApiKey(api_key)),
+        (None, Some(bearer_token)) => Ok(AuthSource::BearerToken(bearer_token)),
+        (None, None) => Err(ApiError::Auth(format!(
+            "missing {} credentials; export {} before calling the {} API",
+            backend.provider_label,
+            backend.auth_env_vars().join(" or "),
+            backend.provider_label
+        ))),
+    }
+}
+
 #[derive(Debug)]
 pub enum MessageStream {
     Anthropic(anthropic::MessageStream),
@@ -136,7 +209,7 @@ pub fn read_base_url() -> String {
 
 #[must_use]
 pub fn read_xai_base_url() -> String {
-    openai_compat::read_base_url(OpenAiCompatConfig::xai())
+    openai_compat::read_base_url(&OpenAiCompatConfig::xai())
 }
 
 #[cfg(test)]

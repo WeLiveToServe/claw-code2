@@ -103,6 +103,7 @@ function Invoke-ClawPrompt {
     param(
         [string]$ClawPath,
         [string]$Model,
+        [string]$Backend,
         [hashtable]$EnvMap = @{}
     )
 
@@ -113,7 +114,12 @@ function Invoke-ClawPrompt {
     }
 
     try {
-        $output = & $ClawPath --model $Model --compact "Reply with exactly OK"
+        $arguments = @()
+        if ($Backend) {
+            $arguments += @("--backend", $Backend)
+        }
+        $arguments += @("--model", $Model, "--compact", "Reply with exactly OK")
+        $output = & $ClawPath @arguments
         if ($LASTEXITCODE -ne 0) {
             throw "claw prompt failed for model $Model with exit code ${LASTEXITCODE}"
         }
@@ -166,6 +172,10 @@ if (-not $LiveOnly) {
             Action = { Invoke-CommandChecked -FilePath "cargo" -ArgumentList @("test", "-p", "api", "--lib", "metadata_builds_matching_openai_compatible_transport_configs") }
         },
         @{
+            Name = "api-openrouter-explicit-backend"
+            Action = { Invoke-CommandChecked -FilePath "cargo" -ArgumentList @("test", "-p", "api", "--lib", "explicit_openrouter_backend_overrides_qwen_prefix_routing") }
+        },
+        @{
             Name = "cli-model-precedence"
             Action = { Invoke-CommandChecked -FilePath "cargo" -ArgumentList @("test", "-p", "rusty-claude-cli", "--bin", "claw", "resolve_repl_model_") }
         },
@@ -209,12 +219,9 @@ if (-not $StructuralOnly) {
         },
         @{
             Name = "live-openrouter-qwen35-27b"
-            Model = "openai/qwen/qwen3.5-27b"
+            Backend = "openrouter"
+            Model = "qwen/qwen3.5-27b"
             RequiredEnv = @("OPENROUTER_API_KEY")
-            EnvMap = @{
-                "OPENAI_API_KEY" = [System.Environment]::GetEnvironmentVariable("OPENROUTER_API_KEY")
-                "OPENAI_BASE_URL" = "https://openrouter.ai/api/v1"
-            }
         },
         @{
             Name = "live-gemini-structural-only"
@@ -254,7 +261,8 @@ if (-not $StructuralOnly) {
 
         $results.Add((Invoke-Step -Name $entry.Name -Action {
             $envMap = if ($entry.ContainsKey("EnvMap")) { $entry.EnvMap } else { @{} }
-            Invoke-ClawPrompt -ClawPath $clawExe -Model $entry.Model -EnvMap $envMap
+            $backend = if ($entry.ContainsKey("Backend")) { $entry.Backend } else { $null }
+            Invoke-ClawPrompt -ClawPath $clawExe -Model $entry.Model -Backend $backend -EnvMap $envMap
         }))
     }
 }

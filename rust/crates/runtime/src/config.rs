@@ -25,6 +25,13 @@ pub enum ResolvedPermissionMode {
     DangerFullAccess,
 }
 
+/// Transport families supported by configured model backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendTransport {
+    Anthropic,
+    OpenAiCompatible,
+}
+
 /// A discovered config file and the scope it contributes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigEntry {
@@ -59,6 +66,8 @@ pub struct RuntimeFeatureConfig {
     mcp: McpConfigCollection,
     oauth: Option<OAuthConfig>,
     env: BTreeMap<String, String>,
+    backend: Option<String>,
+    backends: BTreeMap<String, RuntimeBackendConfig>,
     model: Option<String>,
     aliases: BTreeMap<String, String>,
     permission_mode: Option<ResolvedPermissionMode>,
@@ -75,6 +84,17 @@ pub struct RuntimeFeatureConfig {
 pub struct ProviderFallbackConfig {
     primary: Option<String>,
     fallbacks: Vec<String>,
+}
+
+/// Structured configuration for a named model backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeBackendConfig {
+    pub transport: BackendTransport,
+    pub provider_label: String,
+    pub api_key_env: Option<String>,
+    pub base_url: Option<String>,
+    pub base_url_env: Option<String>,
+    pub default_model: Option<String>,
 }
 
 /// Hook command lists grouped by lifecycle stage.
@@ -310,6 +330,8 @@ impl ConfigLoader {
             },
             oauth: parse_optional_oauth_config(&merged_value, "merged settings.oauth")?,
             env: parse_optional_env(&merged_value)?,
+            backend: parse_optional_backend(&merged_value),
+            backends: parse_optional_backends(&merged_value)?,
             model: parse_optional_model(&merged_value),
             aliases: parse_optional_aliases(&merged_value)?,
             permission_mode: parse_optional_permission_mode(&merged_value)?,
@@ -388,6 +410,16 @@ impl RuntimeConfig {
     }
 
     #[must_use]
+    pub fn backend(&self) -> Option<&str> {
+        self.feature_config.backend.as_deref()
+    }
+
+    #[must_use]
+    pub fn backends(&self) -> &BTreeMap<String, RuntimeBackendConfig> {
+        &self.feature_config.backends
+    }
+
+    #[must_use]
     pub fn model(&self) -> Option<&str> {
         self.feature_config.model.as_deref()
     }
@@ -459,6 +491,16 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn env(&self) -> &BTreeMap<String, String> {
         &self.env
+    }
+
+    #[must_use]
+    pub fn backend(&self) -> Option<&str> {
+        self.backend.as_deref()
+    }
+
+    #[must_use]
+    pub fn backends(&self) -> &BTreeMap<String, RuntimeBackendConfig> {
+        &self.backends
     }
 
     #[must_use]
@@ -752,6 +794,72 @@ fn parse_optional_model(root: &JsonValue) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn parse_optional_backend(root: &JsonValue) -> Option<String> {
+    root.as_object()
+        .and_then(|object| object.get("backend"))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn parse_optional_backends(
+    root: &JsonValue,
+) -> Result<BTreeMap<String, RuntimeBackendConfig>, ConfigError> {
+    let Some(object) = root.as_object() else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(backends_value) = object.get("backends") else {
+        return Ok(BTreeMap::new());
+    };
+    let backend_entries = expect_object(backends_value, "merged settings.backends")?;
+    let mut parsed = BTreeMap::new();
+
+    for (backend_id, backend_value) in backend_entries {
+        let context = format!("merged settings.backends.{backend_id}");
+        let entry = expect_object(backend_value, &context)?;
+        let transport = parse_backend_transport_label(
+            expect_string(entry, "transport", &context)?,
+            &format!("{context}.transport"),
+        )?;
+        let provider_label = optional_string(entry, "providerLabel", &context)?
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| backend_id.clone());
+        let api_key_env = optional_string(entry, "apiKeyEnv", &context)?
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let base_url = optional_string(entry, "baseUrl", &context)?
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let base_url_env = optional_string(entry, "baseUrlEnv", &context)?
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let default_model = optional_string(entry, "defaultModel", &context)?
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        parsed.insert(
+            backend_id.clone(),
+            RuntimeBackendConfig {
+                transport,
+                provider_label,
+                api_key_env,
+                base_url,
+                base_url_env,
+                default_model,
+            },
+        );
+    }
+
+    Ok(parsed)
+}
+
 fn parse_optional_aliases(root: &JsonValue) -> Result<BTreeMap<String, String>, ConfigError> {
     let Some(object) = root.as_object() else {
         return Ok(BTreeMap::new());
@@ -877,6 +985,19 @@ fn parse_permission_mode_label(
         "dontAsk" | "danger-full-access" => Ok(ResolvedPermissionMode::DangerFullAccess),
         other => Err(ConfigError::Parse(format!(
             "{context}: unsupported permission mode {other}"
+        ))),
+    }
+}
+
+fn parse_backend_transport_label(
+    transport: &str,
+    context: &str,
+) -> Result<BackendTransport, ConfigError> {
+    match transport {
+        "anthropic" => Ok(BackendTransport::Anthropic),
+        "openai-compatible" => Ok(BackendTransport::OpenAiCompatible),
+        other => Err(ConfigError::Parse(format!(
+            "{context}: unsupported backend transport {other}"
         ))),
     }
 }
@@ -1263,9 +1384,9 @@ fn push_unique(target: &mut Vec<String>, value: String) {
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_merge_objects, parse_permission_mode_label, ConfigLoader, ConfigSource,
-        McpServerConfig, McpTransport, ResolvedPermissionMode, RuntimeHookConfig,
-        RuntimePluginConfig, CLAW_SETTINGS_SCHEMA_NAME,
+        deep_merge_objects, parse_permission_mode_label, BackendTransport, ConfigLoader,
+        ConfigSource, McpServerConfig, McpTransport, ResolvedPermissionMode,
+        RuntimeHookConfig, RuntimePluginConfig, CLAW_SETTINGS_SCHEMA_NAME,
     };
     use crate::json::JsonValue;
     use crate::sandbox::FilesystemIsolationMode;
@@ -1421,6 +1542,122 @@ mod tests {
             Some(FilesystemIsolationMode::AllowList)
         );
         assert_eq!(loaded.sandbox().allowed_mounts, vec!["logs", "tmp/cache"]);
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn parses_backend_selection_and_named_backends() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        fs::create_dir_all(&home).expect("home config dir");
+
+        fs::write(
+            home.join("settings.json"),
+            r#"{
+              "backend": "openrouter",
+              "backends": {
+                "openrouter": {
+                  "transport": "openai-compatible",
+                  "providerLabel": "openrouter",
+                  "apiKeyEnv": "OPENROUTER_API_KEY",
+                  "baseUrl": "https://openrouter.ai/api/v1",
+                  "defaultModel": "qwen/qwen3.5-27b"
+                }
+              }
+            }"#,
+        )
+        .expect("write user settings");
+        fs::write(
+            cwd.join(".claw").join("settings.local.json"),
+            r#"{
+              "backend": "droplet-qwen",
+              "backends": {
+                "droplet-qwen": {
+                  "transport": "openai-compatible",
+                  "providerLabel": "droplet-qwen",
+                  "apiKeyEnv": "DROPLET_QWEN_API_KEY",
+                  "baseUrlEnv": "DROPLET_QWEN_BASE_URL",
+                  "defaultModel": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ"
+                }
+              }
+            }"#,
+        )
+        .expect("write local settings");
+
+        let loaded = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect("config should load");
+
+        assert_eq!(loaded.backend(), Some("droplet-qwen"));
+        assert_eq!(loaded.backends().len(), 2);
+
+        let openrouter = loaded
+            .backends()
+            .get("openrouter")
+            .expect("openrouter backend should exist");
+        assert_eq!(openrouter.transport, BackendTransport::OpenAiCompatible);
+        assert_eq!(openrouter.provider_label, "openrouter");
+        assert_eq!(openrouter.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+        assert_eq!(
+            openrouter.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(
+            openrouter.default_model.as_deref(),
+            Some("qwen/qwen3.5-27b")
+        );
+
+        let droplet = loaded
+            .backends()
+            .get("droplet-qwen")
+            .expect("droplet backend should exist");
+        assert_eq!(droplet.transport, BackendTransport::OpenAiCompatible);
+        assert_eq!(droplet.provider_label, "droplet-qwen");
+        assert_eq!(
+            droplet.api_key_env.as_deref(),
+            Some("DROPLET_QWEN_API_KEY")
+        );
+        assert_eq!(
+            droplet.base_url_env.as_deref(),
+            Some("DROPLET_QWEN_BASE_URL")
+        );
+        assert_eq!(
+            droplet.default_model.as_deref(),
+            Some("Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn rejects_unsupported_backend_transport_label() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::create_dir_all(&cwd).expect("project dir");
+        fs::write(
+            home.join("settings.json"),
+            r#"{
+              "backends": {
+                "broken": {
+                  "transport": "custom-http"
+                }
+              }
+            }"#,
+        )
+        .expect("write broken settings");
+
+        let error = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect_err("config should fail");
+
+        assert!(error
+            .to_string()
+            .contains("unsupported backend transport custom-http"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }

@@ -79,12 +79,14 @@ const PRIMARY_SESSION_EXTENSION: &str = "jsonl";
 const LEGACY_SESSION_EXTENSION: &str = "json";
 const LATEST_SESSION_REFERENCE: &str = "latest";
 const SESSION_REFERENCE_ALIASES: &[&str] = &[LATEST_SESSION_REFERENCE, "last", "recent"];
+const BACKEND_OVERRIDE_ENV_VAR: &str = "CLAW_BACKEND";
 const MODEL_OVERRIDE_ENV_VARS: &[&str] = &["CLAW_MODEL", "ANTHROPIC_MODEL"];
 const CLI_OPTION_SUGGESTIONS: &[&str] = &[
     "--help",
     "-h",
     "--version",
     "-V",
+    "--backend",
     "--model",
     "--output-format",
     "--permission-mode",
@@ -210,16 +212,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output_format,
         } => resume_session(&session_path, &commands, output_format),
         CliAction::Status {
+            backend,
             model,
             permission_mode,
             output_format,
         } => {
-            let resolved_model = resolve_repl_model(model);
-            print_status_snapshot(&resolved_model, permission_mode, output_format)?
+            let resolved_model = resolve_repl_model_with_backend(model, backend.clone());
+            print_status_snapshot(
+                &resolved_model,
+                backend.as_deref(),
+                permission_mode,
+                output_format,
+            )?
         }
         CliAction::Sandbox { output_format } => print_sandbox_status_snapshot(output_format)?,
         CliAction::Prompt {
             prompt,
+            backend,
             model,
             output_format,
             allowed_tools,
@@ -242,14 +251,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
             let effective_prompt = merge_prompt_with_stdin(&prompt, stdin_context.as_deref());
-            let resolved_model = resolve_repl_model(model);
-            let mut cli = LiveCli::new(resolved_model, true, allowed_tools, permission_mode)?;
+            let resolved_model = resolve_repl_model_with_backend(model, backend.clone());
+            let mut cli =
+                LiveCli::new(resolved_model, backend, true, allowed_tools, permission_mode)?;
             cli.set_reasoning_effort(reasoning_effort);
             cli.run_turn_with_output(&effective_prompt, output_format, compact)?;
         }
         CliAction::Login { output_format } => run_login(output_format)?,
         CliAction::Logout { output_format } => run_logout(output_format)?,
-        CliAction::Doctor { output_format } => run_doctor(output_format)?,
+        CliAction::Doctor {
+            backend,
+            output_format,
+        } => run_doctor(backend, output_format)?,
         CliAction::State { output_format } => run_worker_state(output_format)?,
         CliAction::Init { output_format } => run_init(output_format)?,
         CliAction::Export {
@@ -258,6 +271,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output_format,
         } => run_export(&session_reference, output_path.as_deref(), output_format)?,
         CliAction::Repl {
+            backend,
             model,
             allowed_tools,
             permission_mode,
@@ -265,6 +279,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             reasoning_effort,
             allow_broad_cwd,
         } => run_repl(
+            backend,
             model,
             allowed_tools,
             permission_mode,
@@ -317,6 +332,7 @@ enum CliAction {
         output_format: CliOutputFormat,
     },
     Status {
+        backend: Option<String>,
         model: String,
         permission_mode: PermissionMode,
         output_format: CliOutputFormat,
@@ -326,6 +342,7 @@ enum CliAction {
     },
     Prompt {
         prompt: String,
+        backend: Option<String>,
         model: String,
         output_format: CliOutputFormat,
         allowed_tools: Option<AllowedToolSet>,
@@ -342,6 +359,7 @@ enum CliAction {
         output_format: CliOutputFormat,
     },
     Doctor {
+        backend: Option<String>,
         output_format: CliOutputFormat,
     },
     State {
@@ -356,6 +374,7 @@ enum CliAction {
         output_format: CliOutputFormat,
     },
     Repl {
+        backend: Option<String>,
         model: String,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
@@ -398,6 +417,7 @@ impl CliOutputFormat {
 #[allow(clippy::too_many_lines)]
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let mut model = DEFAULT_MODEL.to_string();
+    let mut backend: Option<String> = None;
     let mut output_format = CliOutputFormat::Text;
     let mut permission_mode_override = None;
     let mut wants_help = false;
@@ -452,8 +472,27 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 model = resolve_model_alias_with_config(value);
                 index += 2;
             }
+            "--backend" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --backend".to_string())?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err("missing value for --backend".to_string());
+                }
+                backend = Some(trimmed.to_string());
+                index += 2;
+            }
             flag if flag.starts_with("--model=") => {
                 model = resolve_model_alias_with_config(&flag[8..]);
+                index += 1;
+            }
+            flag if flag.starts_with("--backend=") => {
+                let value = flag[10..].trim();
+                if value.is_empty() {
+                    return Err("missing value for --backend".to_string());
+                }
+                backend = Some(value.to_string());
                 index += 1;
             }
             "--output-format" => {
@@ -531,6 +570,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 }
                 return Ok(CliAction::Prompt {
                     prompt,
+                    backend: backend.clone(),
                     model: resolve_model_alias_with_config(&model),
                     output_format,
                     allowed_tools: normalize_allowed_tools(&allowed_tool_values)?,
@@ -603,6 +643,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             let piped = buf.trim().to_string();
             if !piped.is_empty() {
                 return Ok(CliAction::Prompt {
+                    backend: backend.clone(),
                     model,
                     prompt: piped,
                     allowed_tools,
@@ -616,6 +657,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             }
         }
         return Ok(CliAction::Repl {
+            backend: backend.clone(),
             model,
             allowed_tools,
             permission_mode,
@@ -631,7 +673,13 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         return action;
     }
     if let Some(action) =
-        parse_single_word_command_alias(&rest, &model, permission_mode_override, output_format)
+        parse_single_word_command_alias(
+            &rest,
+            backend.as_deref(),
+            &model,
+            permission_mode_override,
+            output_format,
+        )
     {
         return action;
     }
@@ -654,6 +702,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             match classify_skills_slash_command(args.as_deref()) {
                 SkillSlashDispatch::Invoke(prompt) => Ok(CliAction::Prompt {
                     prompt,
+                    backend: backend.clone(),
                     model,
                     output_format,
                     allowed_tools,
@@ -681,6 +730,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             }
             Ok(CliAction::Prompt {
                 prompt,
+                backend: backend.clone(),
                 model,
                 output_format,
                 allowed_tools,
@@ -693,6 +743,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         }
         other if other.starts_with('/') => parse_direct_slash_cli_action(
             &rest,
+            backend.clone(),
             model,
             output_format,
             allowed_tools,
@@ -704,6 +755,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         ),
         _other => Ok(CliAction::Prompt {
             prompt: rest.join(" "),
+            backend,
             model,
             output_format,
             allowed_tools,
@@ -736,6 +788,7 @@ fn is_help_flag(value: &str) -> bool {
 
 fn parse_single_word_command_alias(
     rest: &[String],
+    backend: Option<&str>,
     model: &str,
     permission_mode_override: Option<PermissionMode>,
     output_format: CliOutputFormat,
@@ -748,12 +801,16 @@ fn parse_single_word_command_alias(
         "help" => Some(Ok(CliAction::Help { output_format })),
         "version" => Some(Ok(CliAction::Version { output_format })),
         "status" => Some(Ok(CliAction::Status {
+            backend: backend.map(ToOwned::to_owned),
             model: model.to_string(),
             permission_mode: permission_mode_override.unwrap_or_else(default_permission_mode),
             output_format,
         })),
         "sandbox" => Some(Ok(CliAction::Sandbox { output_format })),
-        "doctor" => Some(Ok(CliAction::Doctor { output_format })),
+        "doctor" => Some(Ok(CliAction::Doctor {
+            backend: backend.map(ToOwned::to_owned),
+            output_format,
+        })),
         "state" => Some(Ok(CliAction::State { output_format })),
         other => bare_slash_command_guidance(other).map(Err),
     }
@@ -799,6 +856,7 @@ fn join_optional_args(args: &[String]) -> Option<String> {
 
 fn parse_direct_slash_cli_action(
     rest: &[String],
+    backend: Option<String>,
     model: String,
     output_format: CliOutputFormat,
     allowed_tools: Option<AllowedToolSet>,
@@ -828,6 +886,7 @@ fn parse_direct_slash_cli_action(
             match classify_skills_slash_command(args.as_deref()) {
                 SkillSlashDispatch::Invoke(prompt) => Ok(CliAction::Prompt {
                     prompt,
+                    backend,
                     model,
                     output_format,
                     allowed_tools,
@@ -1083,6 +1142,25 @@ fn config_model_for_current_dir() -> Option<String> {
     loader.load().ok()?.model().map(ToOwned::to_owned)
 }
 
+fn config_backend_for_current_dir() -> Option<String> {
+    let cwd = env::current_dir().ok()?;
+    let loader = ConfigLoader::default_for(&cwd);
+    loader.load().ok()?.backend().map(ToOwned::to_owned)
+}
+
+fn runtime_config_for_current_dir() -> Option<runtime::RuntimeConfig> {
+    let cwd = env::current_dir().ok()?;
+    let loader = ConfigLoader::default_for(&cwd);
+    loader.load().ok()
+}
+
+fn configured_backend_override() -> Option<String> {
+    env::var(BACKEND_OVERRIDE_ENV_VAR)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn configured_model_override() -> Option<String> {
     MODEL_OVERRIDE_ENV_VARS.iter().find_map(|key| {
         env::var(key)
@@ -1090,6 +1168,21 @@ fn configured_model_override() -> Option<String> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     })
+}
+
+fn resolve_cli_backend_with_config(
+    cli_backend: Option<String>,
+    config_backend: Option<String>,
+) -> Option<String> {
+    cli_backend
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(configured_backend_override)
+        .or_else(|| {
+            config_backend
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
 }
 
 fn resolve_cli_model_with_config(cli_model: String, config_model: Option<String>) -> String {
@@ -1105,8 +1198,58 @@ fn resolve_cli_model_with_config(cli_model: String, config_model: Option<String>
     cli_model
 }
 
+fn resolve_cli_model_with_runtime_config(
+    cli_model: String,
+    runtime_config: Option<&runtime::RuntimeConfig>,
+    explicit_backend: Option<&str>,
+) -> String {
+    if cli_model != DEFAULT_MODEL {
+        return cli_model;
+    }
+    if let Some(env_model) = configured_model_override() {
+        return resolve_model_alias_with_config(&env_model);
+    }
+    if let Some(config_model) = runtime_config
+        .and_then(runtime::RuntimeConfig::model)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return resolve_model_alias_with_config(config_model);
+    }
+    if let Ok(resolved_backend) = api::resolve_backend(DEFAULT_MODEL, runtime_config, explicit_backend)
+    {
+        if let Some(default_model) = resolved_backend
+            .default_model
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return resolve_model_alias_with_config(default_model);
+        }
+    }
+    cli_model
+}
+
 fn resolve_repl_model(cli_model: String) -> String {
     resolve_cli_model_with_config(cli_model, config_model_for_current_dir())
+}
+
+fn resolve_repl_backend(cli_backend: Option<String>) -> Option<String> {
+    resolve_cli_backend_with_config(cli_backend, config_backend_for_current_dir())
+}
+
+fn resolve_repl_model_with_backend(cli_model: String, cli_backend: Option<String>) -> String {
+    let runtime_config = runtime_config_for_current_dir();
+    let resolved_backend = resolve_cli_backend_with_config(
+        cli_backend,
+        runtime_config
+            .as_ref()
+            .and_then(runtime::RuntimeConfig::backend)
+            .map(ToOwned::to_owned),
+    );
+    resolve_cli_model_with_runtime_config(
+        cli_model,
+        runtime_config.as_ref(),
+        resolved_backend.as_deref(),
+    )
 }
 
 fn env_var_present(key: &str) -> bool {
@@ -1146,6 +1289,17 @@ fn apply_runtime_env_overrides_for_current_dir() {
 
 fn format_connected_line(model: &str) -> String {
     let provider = resolved_metadata_for_model(model).provider_label;
+    format!("Connected: {model} via {provider}")
+}
+
+fn format_connected_line_with_backend(
+    model: &str,
+    explicit_backend: Option<&str>,
+    runtime_config: Option<&runtime::RuntimeConfig>,
+) -> String {
+    let provider = api::resolve_backend(model, runtime_config, explicit_backend)
+        .map(|backend| backend.provider_label)
+        .unwrap_or_else(|_| resolved_metadata_for_model(model).provider_label.to_string());
     format!("Connected: {model} via {provider}")
 }
 
@@ -1438,7 +1592,9 @@ fn render_diagnostic_check(check: &DiagnosticCheck) -> String {
     lines.join("\n")
 }
 
-fn render_doctor_report() -> Result<DoctorReport, Box<dyn std::error::Error>> {
+fn render_doctor_report(
+    explicit_backend: Option<String>,
+) -> Result<DoctorReport, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let config_loader = ConfigLoader::default_for(&cwd);
     let config = config_loader.load();
@@ -1469,7 +1625,7 @@ fn render_doctor_report() -> Result<DoctorReport, Box<dyn std::error::Error>> {
     };
     Ok(DoctorReport {
         checks: vec![
-            check_auth_health(config.as_ref().ok()),
+            check_auth_health(config.as_ref().ok(), explicit_backend.as_deref()),
             check_config_health(&config_loader, config.as_ref()),
             check_workspace_health(&context),
             check_sandbox_health(&context.sandbox_status),
@@ -1478,8 +1634,11 @@ fn render_doctor_report() -> Result<DoctorReport, Box<dyn std::error::Error>> {
     })
 }
 
-fn run_doctor(output_format: CliOutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    let report = render_doctor_report()?;
+fn run_doctor(
+    explicit_backend: Option<String>,
+    output_format: CliOutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let report = render_doctor_report(explicit_backend)?;
     let message = report.render();
     match output_format {
         CliOutputFormat::Text => println!("{message}"),
@@ -1560,32 +1719,178 @@ fn run_mcp_serve() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck {
-    let resolved_model = resolve_cli_model_with_config(
-        DEFAULT_MODEL.to_string(),
-        config
-            .and_then(runtime::RuntimeConfig::model)
-            .map(ToOwned::to_owned),
+fn check_auth_health(
+    config: Option<&runtime::RuntimeConfig>,
+    explicit_backend: Option<&str>,
+) -> DiagnosticCheck {
+    let resolved_model =
+        resolve_cli_model_with_runtime_config(DEFAULT_MODEL.to_string(), config, explicit_backend);
+    let resolved_backend = match api::resolve_backend(&resolved_model, config, explicit_backend) {
+        Ok(backend) => backend,
+        Err(error) => {
+            return DiagnosticCheck::new(
+                "Auth",
+                DiagnosticLevel::Fail,
+                format!("failed to resolve backend: {error}"),
+            )
+            .with_data(Map::from_iter([
+                ("resolved_model".to_string(), json!(resolved_model)),
+                ("backend_error".to_string(), json!(error.to_string())),
+            ]));
+        }
+    };
+    let base_url = resolved_backend.resolved_base_url();
+    let transport_label = match resolved_backend.transport {
+        runtime::BackendTransport::Anthropic => "anthropic",
+        runtime::BackendTransport::OpenAiCompatible => "openai-compatible",
+    };
+    let base_url_summary = base_url.as_ref().map_or_else(
+        || "<none>".to_string(),
+        |resolved| {
+            let source = match &resolved.source {
+                api::BackendBaseUrlSource::Environment(env_key) => format!("env:{env_key}"),
+                api::BackendBaseUrlSource::Config => "config".to_string(),
+                api::BackendBaseUrlSource::Default => "default".to_string(),
+            };
+            format!("{} ({source})", resolved.value)
+        },
     );
-    let provider_metadata = resolved_metadata_for_model(&resolved_model);
-    match provider_metadata.provider {
-        ProviderKind::Anthropic => {
-            let api_key_present = env_var_present("ANTHROPIC_API_KEY");
-            let auth_token_present = env_var_present("ANTHROPIC_AUTH_TOKEN");
 
-            match load_oauth_credentials() {
-                Ok(Some(token_set)) => {
-                    let expired = oauth_token_is_expired(&api::OAuthTokenSet {
-                        access_token: token_set.access_token.clone(),
-                        refresh_token: token_set.refresh_token.clone(),
-                        expires_at: token_set.expires_at,
-                        scopes: token_set.scopes.clone(),
-                    });
-                    let mut details = vec![
+    match resolved_backend.provider {
+        ProviderKind::Anthropic => {
+            let api_key_env = resolved_backend
+                .auth_env
+                .as_deref()
+                .unwrap_or("ANTHROPIC_API_KEY");
+            let auth_token_env = resolved_backend
+                .auth_token_env
+                .as_deref()
+                .unwrap_or("ANTHROPIC_AUTH_TOKEN");
+            let api_key_present = env_var_present(api_key_env);
+            let auth_token_present = env_var_present(auth_token_env);
+            let uses_saved_oauth = api_key_env == "ANTHROPIC_API_KEY"
+                && auth_token_env == "ANTHROPIC_AUTH_TOKEN";
+
+            if uses_saved_oauth {
+                match load_oauth_credentials() {
+                    Ok(Some(token_set)) => {
+                        let expired = oauth_token_is_expired(&api::OAuthTokenSet {
+                            access_token: token_set.access_token.clone(),
+                            refresh_token: token_set.refresh_token.clone(),
+                            expires_at: token_set.expires_at,
+                            scopes: token_set.scopes.clone(),
+                        });
+                        let mut details = vec![
+                            format!("Resolved model    {resolved_model}"),
+                            format!("Backend           {}", resolved_backend.id),
+                            format!("Provider          {}", resolved_backend.provider_label),
+                            format!("Transport         {transport_label}"),
+                            format!("Base URL          {base_url_summary}"),
+                            format!(
+                                "Environment       {api_key_env}={} {auth_token_env}={}",
+                                if api_key_present { "present" } else { "absent" },
+                                if auth_token_present {
+                                    "present"
+                                } else {
+                                    "absent"
+                                }
+                            ),
+                            format!(
+                                "Saved OAuth       expires_at={} refresh_token={} scopes={}",
+                                token_set
+                                    .expires_at
+                                    .map_or_else(|| "<none>".to_string(), |value| value.to_string()),
+                                if token_set.refresh_token.is_some() {
+                                    "present"
+                                } else {
+                                    "absent"
+                                },
+                                if token_set.scopes.is_empty() {
+                                    "<none>".to_string()
+                                } else {
+                                    token_set.scopes.join(",")
+                                }
+                            ),
+                        ];
+                        if expired {
+                            details.push(
+                                "Suggested action  claw login to refresh local OAuth credentials"
+                                    .to_string(),
+                            );
+                        }
+                        DiagnosticCheck::new(
+                            "Auth",
+                            if expired {
+                                DiagnosticLevel::Warn
+                            } else {
+                                DiagnosticLevel::Ok
+                            },
+                            if expired {
+                                "saved OAuth credentials are present but expired"
+                            } else if api_key_present || auth_token_present {
+                                "environment and saved credentials are available"
+                            } else {
+                                "saved OAuth credentials are available"
+                            },
+                        )
+                        .with_details(details)
+                        .with_data(Map::from_iter([
+                            ("backend".to_string(), json!(resolved_backend.id)),
+                            (
+                                "provider".to_string(),
+                                json!(resolved_backend.provider_label),
+                            ),
+                            ("transport".to_string(), json!(transport_label)),
+                            ("resolved_model".to_string(), json!(resolved_model)),
+                            ("api_key_env".to_string(), json!(api_key_env)),
+                            ("auth_token_env".to_string(), json!(auth_token_env)),
+                            ("api_key_present".to_string(), json!(api_key_present)),
+                            ("auth_token_present".to_string(), json!(auth_token_present)),
+                            ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
+                            (
+                                "base_url_source".to_string(),
+                                json!(base_url.as_ref().map(|resolved| match &resolved.source {
+                                    api::BackendBaseUrlSource::Environment(env_key) => {
+                                        format!("env:{env_key}")
+                                    }
+                                    api::BackendBaseUrlSource::Config => "config".to_string(),
+                                    api::BackendBaseUrlSource::Default => "default".to_string(),
+                                })),
+                            ),
+                            ("saved_oauth_present".to_string(), json!(true)),
+                            ("saved_oauth_expired".to_string(), json!(expired)),
+                            (
+                                "saved_oauth_expires_at".to_string(),
+                                json!(token_set.expires_at),
+                            ),
+                            (
+                                "refresh_token_present".to_string(),
+                                json!(token_set.refresh_token.is_some()),
+                            ),
+                            ("scopes".to_string(), json!(token_set.scopes)),
+                        ]))
+                    }
+                    Ok(None) => DiagnosticCheck::new(
+                        "Auth",
+                        if api_key_present || auth_token_present {
+                            DiagnosticLevel::Ok
+                        } else {
+                            DiagnosticLevel::Warn
+                        },
+                        if api_key_present || auth_token_present {
+                            "environment credentials are configured"
+                        } else {
+                            "no API key or saved OAuth credentials were found"
+                        },
+                    )
+                    .with_details(vec![
                         format!("Resolved model    {resolved_model}"),
-                        format!("Provider          {}", provider_metadata.provider_label),
+                        format!("Backend           {}", resolved_backend.id),
+                        format!("Provider          {}", resolved_backend.provider_label),
+                        format!("Transport         {transport_label}"),
+                        format!("Base URL          {base_url_summary}"),
                         format!(
-                            "Environment       api_key={} auth_token={}",
+                            "Environment       {api_key_env}={} {auth_token_env}={}",
                             if api_key_present { "present" } else { "absent" },
                             if auth_token_present {
                                 "present"
@@ -1593,67 +1898,63 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                                 "absent"
                             }
                         ),
-                        format!(
-                            "Saved OAuth       expires_at={} refresh_token={} scopes={}",
-                            token_set
-                                .expires_at
-                                .map_or_else(|| "<none>".to_string(), |value| value.to_string()),
-                            if token_set.refresh_token.is_some() {
-                                "present"
-                            } else {
-                                "absent"
-                            },
-                            if token_set.scopes.is_empty() {
-                                "<none>".to_string()
-                            } else {
-                                token_set.scopes.join(",")
-                            }
-                        ),
-                    ];
-                    if expired {
-                        details.push(
-                            "Suggested action  claw login to refresh local OAuth credentials"
-                                .to_string(),
-                        );
-                    }
-                    DiagnosticCheck::new(
-                        "Auth",
-                        if expired {
-                            DiagnosticLevel::Warn
-                        } else {
-                            DiagnosticLevel::Ok
-                        },
-                        if expired {
-                            "saved OAuth credentials are present but expired"
-                        } else if api_key_present || auth_token_present {
-                            "environment and saved credentials are available"
-                        } else {
-                            "saved OAuth credentials are available"
-                        },
-                    )
-                    .with_details(details)
+                    ])
                     .with_data(Map::from_iter([
+                        ("backend".to_string(), json!(resolved_backend.id)),
                         (
                             "provider".to_string(),
-                            json!(provider_metadata.provider_label),
+                            json!(resolved_backend.provider_label),
                         ),
+                        ("transport".to_string(), json!(transport_label)),
                         ("resolved_model".to_string(), json!(resolved_model)),
+                        ("api_key_env".to_string(), json!(api_key_env)),
+                        ("auth_token_env".to_string(), json!(auth_token_env)),
                         ("api_key_present".to_string(), json!(api_key_present)),
                         ("auth_token_present".to_string(), json!(auth_token_present)),
-                        ("saved_oauth_present".to_string(), json!(true)),
-                        ("saved_oauth_expired".to_string(), json!(expired)),
+                        ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
                         (
-                            "saved_oauth_expires_at".to_string(),
-                            json!(token_set.expires_at),
+                            "base_url_source".to_string(),
+                            json!(base_url.as_ref().map(|resolved| match &resolved.source {
+                                api::BackendBaseUrlSource::Environment(env_key) => {
+                                    format!("env:{env_key}")
+                                }
+                                api::BackendBaseUrlSource::Config => "config".to_string(),
+                                api::BackendBaseUrlSource::Default => "default".to_string(),
+                            })),
                         ),
+                        ("saved_oauth_present".to_string(), json!(false)),
+                        ("saved_oauth_expired".to_string(), json!(false)),
+                        ("saved_oauth_expires_at".to_string(), Value::Null),
+                        ("refresh_token_present".to_string(), json!(false)),
+                        ("scopes".to_string(), json!(Vec::<String>::new())),
+                    ])),
+                    Err(error) => DiagnosticCheck::new(
+                        "Auth",
+                        DiagnosticLevel::Fail,
+                        format!("failed to inspect saved credentials: {error}"),
+                    )
+                    .with_data(Map::from_iter([
+                        ("backend".to_string(), json!(resolved_backend.id)),
                         (
-                            "refresh_token_present".to_string(),
-                            json!(token_set.refresh_token.is_some()),
+                            "provider".to_string(),
+                            json!(resolved_backend.provider_label),
                         ),
-                        ("scopes".to_string(), json!(token_set.scopes)),
-                    ]))
+                        ("transport".to_string(), json!(transport_label)),
+                        ("resolved_model".to_string(), json!(resolved_model)),
+                        ("api_key_env".to_string(), json!(api_key_env)),
+                        ("auth_token_env".to_string(), json!(auth_token_env)),
+                        ("api_key_present".to_string(), json!(api_key_present)),
+                        ("auth_token_present".to_string(), json!(auth_token_present)),
+                        ("saved_oauth_present".to_string(), Value::Null),
+                        ("saved_oauth_expired".to_string(), Value::Null),
+                        ("saved_oauth_expires_at".to_string(), Value::Null),
+                        ("refresh_token_present".to_string(), Value::Null),
+                        ("scopes".to_string(), Value::Null),
+                        ("saved_oauth_error".to_string(), json!(error.to_string())),
+                    ])),
                 }
-                Ok(None) => DiagnosticCheck::new(
+            } else {
+                DiagnosticCheck::new(
                     "Auth",
                     if api_key_present || auth_token_present {
                         DiagnosticLevel::Ok
@@ -1663,14 +1964,17 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                     if api_key_present || auth_token_present {
                         "environment credentials are configured"
                     } else {
-                        "no API key or saved OAuth credentials were found"
+                        "no backend credentials were found for the resolved model"
                     },
                 )
                 .with_details(vec![
                     format!("Resolved model    {resolved_model}"),
-                    format!("Provider          {}", provider_metadata.provider_label),
+                    format!("Backend           {}", resolved_backend.id),
+                    format!("Provider          {}", resolved_backend.provider_label),
+                    format!("Transport         {transport_label}"),
+                    format!("Base URL          {base_url_summary}"),
                     format!(
-                        "Environment       api_key={} auth_token={}",
+                        "Environment       {api_key_env}={} {auth_token_env}={}",
                         if api_key_present { "present" } else { "absent" },
                         if auth_token_present {
                             "present"
@@ -1680,123 +1984,98 @@ fn check_auth_health(config: Option<&runtime::RuntimeConfig>) -> DiagnosticCheck
                     ),
                 ])
                 .with_data(Map::from_iter([
+                    ("backend".to_string(), json!(resolved_backend.id)),
                     (
                         "provider".to_string(),
-                        json!(provider_metadata.provider_label),
+                        json!(resolved_backend.provider_label),
                     ),
+                    ("transport".to_string(), json!(transport_label)),
                     ("resolved_model".to_string(), json!(resolved_model)),
+                    ("api_key_env".to_string(), json!(api_key_env)),
+                    ("auth_token_env".to_string(), json!(auth_token_env)),
                     ("api_key_present".to_string(), json!(api_key_present)),
                     ("auth_token_present".to_string(), json!(auth_token_present)),
-                    ("saved_oauth_present".to_string(), json!(false)),
-                    ("saved_oauth_expired".to_string(), json!(false)),
-                    ("saved_oauth_expires_at".to_string(), Value::Null),
-                    ("refresh_token_present".to_string(), json!(false)),
-                    ("scopes".to_string(), json!(Vec::<String>::new())),
-                ])),
-                Err(error) => DiagnosticCheck::new(
-                    "Auth",
-                    DiagnosticLevel::Fail,
-                    format!("failed to inspect saved credentials: {error}"),
-                )
-                .with_data(Map::from_iter([
+                    ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
                     (
-                        "provider".to_string(),
-                        json!(provider_metadata.provider_label),
+                        "base_url_source".to_string(),
+                        json!(base_url.as_ref().map(|resolved| match &resolved.source {
+                            api::BackendBaseUrlSource::Environment(env_key) => {
+                                format!("env:{env_key}")
+                            }
+                            api::BackendBaseUrlSource::Config => "config".to_string(),
+                            api::BackendBaseUrlSource::Default => "default".to_string(),
+                        })),
                     ),
-                    ("resolved_model".to_string(), json!(resolved_model)),
-                    ("api_key_present".to_string(), json!(api_key_present)),
-                    ("auth_token_present".to_string(), json!(auth_token_present)),
-                    ("saved_oauth_present".to_string(), Value::Null),
-                    ("saved_oauth_expired".to_string(), Value::Null),
-                    ("saved_oauth_expires_at".to_string(), Value::Null),
-                    ("refresh_token_present".to_string(), Value::Null),
-                    ("scopes".to_string(), Value::Null),
-                    ("saved_oauth_error".to_string(), json!(error.to_string())),
-                ])),
+                ]))
             }
         }
-        ProviderKind::Xai => {
-            let api_key_env = provider_metadata.auth_env;
-            let base_url_env = provider_metadata.base_url_env;
-            let api_key_present = env_var_present(api_key_env);
-            let base_url_present = env_var_present(base_url_env);
+        ProviderKind::Xai | ProviderKind::OpenAi => {
+            let api_key_env = resolved_backend.auth_env.clone();
+            let base_url_env = resolved_backend.base_url_env.clone();
+            let api_key_present = api_key_env
+                .as_deref()
+                .is_some_and(env_var_present);
+            let base_url_present = base_url_env
+                .as_deref()
+                .is_some_and(env_var_present);
             DiagnosticCheck::new(
                 "Auth",
-                if api_key_present {
+                if api_key_present || resolved_backend.auth_env.is_none() {
                     DiagnosticLevel::Ok
                 } else {
                     DiagnosticLevel::Warn
                 },
                 if api_key_present {
-                    "xAI credentials are configured"
+                    format!("{} credentials are configured", resolved_backend.provider_label)
+                } else if resolved_backend.auth_env.is_none() {
+                    format!(
+                        "{} is configured without API-key auth",
+                        resolved_backend.provider_label
+                    )
                 } else {
-                    "no xAI API key was found for the resolved model"
+                    format!(
+                        "no {} credential was found for the resolved backend",
+                        api_key_env.as_deref().unwrap_or("<none>")
+                    )
                 },
             )
             .with_details(vec![
                 format!("Resolved model    {resolved_model}"),
-                format!("Provider          {}", provider_metadata.provider_label),
+                format!("Backend           {}", resolved_backend.id),
+                format!("Provider          {}", resolved_backend.provider_label),
+                format!("Transport         {transport_label}"),
+                format!("Base URL          {base_url_summary}"),
                 format!(
-                    "Environment       {api_key_env}={} {base_url_env}={}",
+                    "Environment       {}={} {}={}",
+                    api_key_env.as_deref().unwrap_or("<none>"),
                     if api_key_present { "present" } else { "absent" },
-                    if base_url_present {
-                        "present"
-                    } else {
-                        "absent"
-                    }
+                    base_url_env.as_deref().unwrap_or("<none>"),
+                    if base_url_present { "present" } else { "absent" }
                 ),
             ])
             .with_data(Map::from_iter([
+                ("backend".to_string(), json!(resolved_backend.id)),
                 (
                     "provider".to_string(),
-                    json!(provider_metadata.provider_label),
+                    json!(resolved_backend.provider_label),
                 ),
+                ("transport".to_string(), json!(transport_label)),
                 ("resolved_model".to_string(), json!(resolved_model)),
                 ("api_key_env".to_string(), json!(api_key_env)),
                 ("base_url_env".to_string(), json!(base_url_env)),
                 ("api_key_present".to_string(), json!(api_key_present)),
                 ("base_url_present".to_string(), json!(base_url_present)),
-            ]))
-        }
-        ProviderKind::OpenAi => {
-            let api_key_env = provider_metadata.auth_env;
-            let base_url_env = provider_metadata.base_url_env;
-            let provider_label = provider_metadata.provider_label;
-            let api_key_present = env_var_present(api_key_env);
-            let base_url_present = env_var_present(base_url_env);
-            DiagnosticCheck::new(
-                "Auth",
-                if api_key_present {
-                    DiagnosticLevel::Ok
-                } else {
-                    DiagnosticLevel::Warn
-                },
-                if api_key_present {
-                    format!("{provider_label} credentials are configured")
-                } else {
-                    format!("no {api_key_env} credential was found for the resolved model")
-                },
-            )
-            .with_details(vec![
-                format!("Resolved model    {resolved_model}"),
-                format!("Provider          {provider_label}"),
-                format!(
-                    "Environment       {api_key_env}={} {base_url_env}={}",
-                    if api_key_present { "present" } else { "absent" },
-                    if base_url_present {
-                        "present"
-                    } else {
-                        "absent"
-                    }
+                ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
+                (
+                    "base_url_source".to_string(),
+                    json!(base_url.as_ref().map(|resolved| match &resolved.source {
+                        api::BackendBaseUrlSource::Environment(env_key) => {
+                            format!("env:{env_key}")
+                        }
+                        api::BackendBaseUrlSource::Config => "config".to_string(),
+                        api::BackendBaseUrlSource::Default => "default".to_string(),
+                    })),
                 ),
-            ])
-            .with_data(Map::from_iter([
-                ("provider".to_string(), json!(provider_label)),
-                ("resolved_model".to_string(), json!(resolved_model)),
-                ("api_key_env".to_string(), json!(api_key_env)),
-                ("base_url_env".to_string(), json!(base_url_env)),
-                ("api_key_present".to_string(), json!(api_key_present)),
-                ("base_url_present".to_string(), json!(base_url_present)),
             ]))
         }
     }
@@ -3053,7 +3332,7 @@ fn run_resume_command(
             })
         }
         SlashCommand::Doctor => {
-            let report = render_doctor_report()?;
+            let report = render_doctor_report(None)?;
             Ok(ResumeCommandOutcome {
                 session: session.clone(),
                 message: Some(report.render()),
@@ -3240,6 +3519,7 @@ fn run_stale_base_preflight(flag_value: Option<&str>) {
 }
 
 fn run_repl(
+    backend: Option<String>,
     model: String,
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
@@ -3249,13 +3529,19 @@ fn run_repl(
 ) -> Result<(), Box<dyn std::error::Error>> {
     enforce_broad_cwd_policy(allow_broad_cwd, CliOutputFormat::Text)?;
     run_stale_base_preflight(base_commit.as_deref());
-    let resolved_model = resolve_repl_model(model);
-    let mut cli = LiveCli::new(resolved_model, true, allowed_tools, permission_mode)?;
+    let resolved_model = resolve_repl_model_with_backend(model, backend.clone());
+    let mut cli = LiveCli::new(
+        resolved_model,
+        backend.clone(),
+        true,
+        allowed_tools,
+        permission_mode,
+    )?;
     cli.set_reasoning_effort(reasoning_effort);
     let mut editor =
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
-    println!("{}", format_connected_line(&cli.model));
+    println!("{}", format_connected_line_with_backend(&cli.model, backend.as_deref(), None));
 
     loop {
         editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());
@@ -3335,6 +3621,7 @@ struct ManagedSessionSummary {
 
 struct LiveCli {
     model: String,
+    backend: Option<String>,
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     system_prompt: Vec<String>,
@@ -3823,6 +4110,7 @@ impl HookAbortMonitor {
 impl LiveCli {
     fn new(
         model: String,
+        backend: Option<String>,
         enable_tools: bool,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
@@ -3834,6 +4122,7 @@ impl LiveCli {
             session_state.with_persistence_path(session.path.clone()),
             &session.id,
             model.clone(),
+            backend.clone(),
             system_prompt.clone(),
             enable_tools,
             true,
@@ -3843,6 +4132,7 @@ impl LiveCli {
         )?;
         let cli = Self {
             model,
+            backend,
             allowed_tools,
             permission_mode,
             system_prompt,
@@ -3924,6 +4214,7 @@ impl LiveCli {
             self.runtime.session().clone(),
             &self.session.id,
             self.model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             true,
             emit_output,
@@ -4161,7 +4452,7 @@ impl LiveCli {
                 false
             }
             SlashCommand::Doctor => {
-                println!("{}", render_doctor_report()?.render());
+                println!("{}", render_doctor_report(self.backend.clone())?.render());
                 false
             }
             SlashCommand::History { count } => {
@@ -4343,6 +4634,7 @@ impl LiveCli {
             session,
             &self.session.id,
             model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             true,
             true,
@@ -4389,6 +4681,7 @@ impl LiveCli {
             session,
             &self.session.id,
             self.model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             true,
             true,
@@ -4419,6 +4712,7 @@ impl LiveCli {
             session_state.with_persistence_path(self.session.path.clone()),
             &self.session.id,
             self.model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             true,
             true,
@@ -4461,6 +4755,7 @@ impl LiveCli {
             session,
             &handle.id,
             self.model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             true,
             true,
@@ -4617,6 +4912,7 @@ impl LiveCli {
                     session,
                     &handle.id,
                     self.model.clone(),
+                    self.backend.clone(),
                     self.system_prompt.clone(),
                     true,
                     true,
@@ -4652,6 +4948,7 @@ impl LiveCli {
                     forked,
                     &handle.id,
                     self.model.clone(),
+                    self.backend.clone(),
                     self.system_prompt.clone(),
                     true,
                     true,
@@ -4748,6 +5045,7 @@ impl LiveCli {
             self.runtime.session().clone(),
             &self.session.id,
             self.model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             true,
             true,
@@ -4768,6 +5066,7 @@ impl LiveCli {
             result.compacted_session,
             &self.session.id,
             self.model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             true,
             true,
@@ -4792,6 +5091,7 @@ impl LiveCli {
             session,
             &self.session.id,
             self.model.clone(),
+            self.backend.clone(),
             self.system_prompt.clone(),
             enable_tools,
             false,
@@ -5177,6 +5477,7 @@ fn render_repl_help() -> String {
 
 fn print_status_snapshot(
     model: &str,
+    _explicit_backend: Option<&str>,
     permission_mode: PermissionMode,
     output_format: CliOutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -6831,6 +7132,7 @@ fn build_runtime(
     session: Session,
     session_id: &str,
     model: String,
+    backend: Option<String>,
     system_prompt: Vec<String>,
     enable_tools: bool,
     emit_output: bool,
@@ -6843,6 +7145,7 @@ fn build_runtime(
         session,
         session_id,
         model,
+        backend,
         system_prompt,
         enable_tools,
         emit_output,
@@ -6859,6 +7162,7 @@ fn build_runtime_with_plugin_state(
     session: Session,
     session_id: &str,
     model: String,
+    backend: Option<String>,
     system_prompt: Vec<String>,
     enable_tools: bool,
     emit_output: bool,
@@ -6881,6 +7185,7 @@ fn build_runtime_with_plugin_state(
         AnthropicRuntimeClient::new(
             session_id,
             model,
+            backend,
             enable_tools,
             emit_output,
             allowed_tools.clone(),
@@ -6986,11 +7291,10 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
 }
 
 // NOTE: Despite the historical name `AnthropicRuntimeClient`, this struct
-// now holds an `ApiProviderClient` which dispatches to Anthropic, xAI,
-// OpenAI, or DashScope at construction time based on
-// `detect_provider_kind(&model)`. The struct name is kept to avoid
-// churning `BuiltRuntime` and every Deref/DerefMut site that references
-// it. See ROADMAP #29 for the provider-dispatch routing fix.
+// now holds an `ApiProviderClient` which dispatches to Anthropic or any
+// configured OpenAI-compatible backend at construction time. The struct
+// name is kept to avoid churning `BuiltRuntime` and every Deref/DerefMut
+// site that references it.
 struct AnthropicRuntimeClient {
     runtime: tokio::runtime::Runtime,
     client: ApiProviderClient,
@@ -7008,53 +7312,36 @@ impl AnthropicRuntimeClient {
     fn new(
         session_id: &str,
         model: String,
+        backend: Option<String>,
         enable_tools: bool,
         emit_output: bool,
         allowed_tools: Option<AllowedToolSet>,
         tool_registry: GlobalToolRegistry,
         progress_reporter: Option<InternalPromptProgressReporter>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Dispatch to the correct provider at construction time.
-        // `ApiProviderClient` (exposed by the api crate as
-        // `ProviderClient`) is an enum over Anthropic / xAI / OpenAI
-        // variants, where xAI and OpenAI both use the OpenAI-compat
-        // wire format under the hood. We consult
-        // `detect_provider_kind(&resolved_model)` so model-name prefix
-        // routing (`openai/`, `gpt-`, `grok`, `qwen/`) wins over
-        // env-var presence.
-        //
-        // For Anthropic we build the client directly instead of going
-        // through `ApiProviderClient::from_model_with_anthropic_auth`
-        // so we can explicitly apply `api::read_base_url()` — that
-        // reads `ANTHROPIC_BASE_URL` and is required for the local
-        // mock-server test harness
-        // (`crates/rusty-claude-cli/tests/compact_output.rs`) to point
-        // claw at its fake Anthropic endpoint. We also attach a
-        // session-scoped prompt cache on the Anthropic path; the
-        // prompt cache is Anthropic-only so non-Anthropic variants
-        // skip it.
         let resolved_model = api::resolve_model_alias(&model);
-        let client = match detect_provider_kind(&resolved_model) {
-            ProviderKind::Anthropic => {
-                let auth = resolve_cli_auth_source()?;
-                let inner = AnthropicClient::from_auth(auth)
-                    .with_base_url(api::read_base_url())
-                    .with_prompt_cache(PromptCache::new(session_id));
-                ApiProviderClient::Anthropic(inner)
+        let runtime_config = runtime_config_for_current_dir();
+        let resolved_backend =
+            api::resolve_backend(&resolved_model, runtime_config.as_ref(), backend.as_deref())?;
+        let uses_default_anthropic_auth = resolved_backend.provider == ProviderKind::Anthropic
+            && resolved_backend.auth_env.as_deref() == Some("ANTHROPIC_API_KEY")
+            && resolved_backend.auth_token_env.as_deref() == Some("ANTHROPIC_AUTH_TOKEN");
+        let anthropic_auth = if uses_default_anthropic_auth {
+            Some(resolve_cli_auth_source()?)
+        } else {
+            None
+        };
+        let client = ApiProviderClient::from_model_with_backend_and_anthropic_auth(
+            &resolved_model,
+            runtime_config.as_ref(),
+            backend.as_deref(),
+            anthropic_auth,
+        )?;
+        let client = match client {
+            ApiProviderClient::Anthropic(inner) => {
+                ApiProviderClient::Anthropic(inner.with_prompt_cache(PromptCache::new(session_id)))
             }
-            ProviderKind::Xai | ProviderKind::OpenAi => {
-                // The api crate's `ProviderClient::from_model_with_anthropic_auth`
-                // with `None` for the anthropic auth routes via
-                // `detect_provider_kind` and builds an
-                // `OpenAiCompatClient::from_env` with the matching
-                // `OpenAiCompatConfig` (openai / xai / dashscope).
-                // That reads the correct API-key env var and BASE_URL
-                // override internally, so this one call covers OpenAI,
-                // OpenRouter, xAI, DashScope, Ollama, and any other
-                // OpenAI-compat endpoint users configure via
-                // `OPENAI_BASE_URL` / `XAI_BASE_URL` / `DASHSCOPE_BASE_URL`.
-                ApiProviderClient::from_model_with_anthropic_auth(&resolved_model, None)?
-            }
+            other => other,
         };
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
@@ -8603,7 +8890,8 @@ mod tests {
         render_config_report, render_diff_report, render_diff_report_for, render_memory_report,
         render_prompt_history_report, render_repl_help, render_resume_usage,
         render_session_markdown, resolve_model_alias, resolve_model_alias_with_config,
-        resolve_repl_model, resolve_session_reference, response_to_events,
+        resolve_repl_backend, resolve_repl_model, resolve_repl_model_with_backend,
+        resolve_session_reference, response_to_events,
         resume_supported_slash_commands, run_resume_command, short_tool_id,
         slash_command_completion_candidates_with_sessions, status_context,
         summarize_tool_payload_for_markdown, validate_no_args, write_mcp_server_fixture, CliAction,
@@ -8881,39 +9169,70 @@ mod tests {
         }
     }
 
+    fn test_script_extension() -> &'static str {
+        if cfg!(windows) {
+            "cmd"
+        } else {
+            "sh"
+        }
+    }
+
+    fn normalize_newlines(input: &str) -> String {
+        input.replace("\r\n", "\n")
+    }
+
     fn write_plugin_fixture(root: &Path, name: &str, include_hooks: bool, include_lifecycle: bool) {
         fs::create_dir_all(root.join(".claude-plugin")).expect("manifest dir");
+        let hook_file = format!("pre.{}", test_script_extension());
+        let init_file = format!("init.{}", test_script_extension());
+        let shutdown_file = format!("shutdown.{}", test_script_extension());
         if include_hooks {
             fs::create_dir_all(root.join("hooks")).expect("hooks dir");
             fs::write(
-                root.join("hooks").join("pre.sh"),
-                "#!/bin/sh\nprintf 'plugin pre hook'\n",
+                root.join("hooks").join(&hook_file),
+                if cfg!(windows) {
+                    "@echo off\r\necho plugin pre hook\r\n"
+                } else {
+                    "#!/bin/sh\nprintf 'plugin pre hook'\n"
+                },
             )
             .expect("write hook");
         }
         if include_lifecycle {
             fs::create_dir_all(root.join("lifecycle")).expect("lifecycle dir");
             fs::write(
-                root.join("lifecycle").join("init.sh"),
-                "#!/bin/sh\nprintf 'init\\n' >> lifecycle.log\n",
+                root.join("lifecycle").join(&init_file),
+                if cfg!(windows) {
+                    "@echo off\r\necho init>> lifecycle.log\r\n"
+                } else {
+                    "#!/bin/sh\nprintf 'init\\n' >> lifecycle.log\n"
+                },
             )
             .expect("write init lifecycle");
             fs::write(
-                root.join("lifecycle").join("shutdown.sh"),
-                "#!/bin/sh\nprintf 'shutdown\\n' >> lifecycle.log\n",
+                root.join("lifecycle").join(&shutdown_file),
+                if cfg!(windows) {
+                    "@echo off\r\necho shutdown>> lifecycle.log\r\n"
+                } else {
+                    "#!/bin/sh\nprintf 'shutdown\\n' >> lifecycle.log\n"
+                },
             )
             .expect("write shutdown lifecycle");
         }
 
         let hooks = if include_hooks {
-            ",\n  \"hooks\": {\n    \"PreToolUse\": [\"./hooks/pre.sh\"]\n  }"
+            format!(
+                ",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/{hook_file}\"]\n  }}"
+            )
         } else {
-            ""
+            String::new()
         };
         let lifecycle = if include_lifecycle {
-            ",\n  \"lifecycle\": {\n    \"Init\": [\"./lifecycle/init.sh\"],\n    \"Shutdown\": [\"./lifecycle/shutdown.sh\"]\n  }"
+            format!(
+                ",\n  \"lifecycle\": {{\n    \"Init\": [\"./lifecycle/{init_file}\"],\n    \"Shutdown\": [\"./lifecycle/{shutdown_file}\"]\n  }}"
+            )
         } else {
-            ""
+            String::new()
         };
         fs::write(
             root.join(".claude-plugin").join("plugin.json"),
@@ -8931,6 +9250,7 @@ mod tests {
             parse_args(&[]).expect("args should parse"),
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
                 base_commit: None,
@@ -9094,6 +9414,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "hello world".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -9185,6 +9506,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
                 model: "claude-opus".to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Json,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -9216,6 +9538,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "summarize this".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -9259,6 +9582,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
                 model: "claude-opus-4-6".to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -9340,6 +9664,7 @@ mod tests {
             parse_args(&args).expect("args should parse"),
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 allowed_tools: None,
                 permission_mode: PermissionMode::ReadOnly,
                 base_commit: None,
@@ -9361,6 +9686,7 @@ mod tests {
             parsed,
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
                 base_commit: None,
@@ -9389,6 +9715,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "do the thing".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -9413,6 +9740,7 @@ mod tests {
             parse_args(&args).expect("args should parse"),
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 allowed_tools: Some(
                     ["glob_search", "read_file", "write_file"]
                         .into_iter()
@@ -9470,6 +9798,7 @@ mod tests {
         assert_eq!(
             parse_args(&["doctor".to_string()]).expect("doctor should parse"),
             CliAction::Doctor {
+                backend: None,
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -9527,6 +9856,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "$help overview".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: crate::default_permission_mode(),
@@ -9585,6 +9915,7 @@ mod tests {
             parse_args(&["status".to_string()]).expect("status should parse"),
             CliAction::Status {
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 permission_mode: PermissionMode::DangerFullAccess,
                 output_format: CliOutputFormat::Text,
             }
@@ -9912,6 +10243,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "help me debug".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: crate::default_permission_mode(),
@@ -9980,6 +10312,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "$help overview".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: crate::default_permission_mode(),
@@ -10007,6 +10340,7 @@ mod tests {
             CliAction::Prompt {
                 prompt: "$test".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                backend: None,
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: crate::default_permission_mode(),
@@ -10275,6 +10609,7 @@ mod tests {
         let banner = with_current_dir(&root, || {
             LiveCli::new(
                 "claude-sonnet-4-6".to_string(),
+                None,
                 true,
                 None,
                 PermissionMode::DangerFullAccess,
@@ -10333,6 +10668,34 @@ mod tests {
         let resolved = resolve_repl_model(user_model);
 
         assert_eq!(resolved, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn parses_backend_flag_for_prompt_mode() {
+        let _guard = env_lock();
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+        let args = vec![
+            "--backend".to_string(),
+            "openrouter".to_string(),
+            "prompt".to_string(),
+            "hello".to_string(),
+        ];
+
+        assert_eq!(
+            parse_args(&args).expect("args should parse"),
+            CliAction::Prompt {
+                prompt: "hello".to_string(),
+                model: DEFAULT_MODEL.to_string(),
+                backend: Some("openrouter".to_string()),
+                output_format: CliOutputFormat::Text,
+                allowed_tools: None,
+                permission_mode: PermissionMode::DangerFullAccess,
+                compact: false,
+                base_commit: None,
+                reasoning_effort: None,
+                allow_broad_cwd: false,
+            }
+        );
     }
 
     #[test]
@@ -10458,6 +10821,100 @@ mod tests {
         fs::remove_dir_all(root).expect("cleanup temp dir");
 
         assert_eq!(resolved, "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn resolve_repl_backend_prefers_cli_then_env_then_config() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let config_home = root.join("config");
+        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        fs::create_dir_all(&config_home).expect("config home dir");
+        fs::write(
+            cwd.join(".claw").join("settings.json"),
+            r#"{"backend":"openrouter"}"#,
+        )
+        .expect("project backend config should write");
+
+        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_backend = std::env::var("CLAW_BACKEND").ok();
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_BACKEND", "xai");
+
+        let from_env = with_current_dir(&cwd, || resolve_repl_backend(None));
+        let from_cli = with_current_dir(&cwd, || resolve_repl_backend(Some("dashscope".to_string())));
+
+        match original_config_home {
+            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
+            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+        }
+        match original_backend {
+            Some(value) => std::env::set_var("CLAW_BACKEND", value),
+            None => std::env::remove_var("CLAW_BACKEND"),
+        }
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+
+        assert_eq!(from_env.as_deref(), Some("xai"));
+        assert_eq!(from_cli.as_deref(), Some("dashscope"));
+    }
+
+    #[test]
+    fn resolve_repl_model_with_backend_uses_backend_default_model() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let config_home = root.join("config");
+        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        fs::create_dir_all(&config_home).expect("config home dir");
+        fs::write(
+            cwd.join(".claw").join("settings.json"),
+            r#"{
+  "backend": "openrouter",
+  "backends": {
+    "openrouter": {
+      "transport": "openai-compatible",
+      "providerLabel": "openrouter",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "defaultModel": "qwen/qwen3.5-27b"
+    }
+  }
+}"#,
+        )
+        .expect("project backend config should write");
+
+        let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        let original_claw_model = std::env::var("CLAW_MODEL").ok();
+        let original_anthropic_model = std::env::var("ANTHROPIC_MODEL").ok();
+        let original_backend = std::env::var("CLAW_BACKEND").ok();
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("CLAW_MODEL");
+        std::env::remove_var("ANTHROPIC_MODEL");
+        std::env::remove_var("CLAW_BACKEND");
+
+        let resolved =
+            with_current_dir(&cwd, || resolve_repl_model_with_backend(DEFAULT_MODEL.to_string(), None));
+
+        match original_config_home {
+            Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
+            None => std::env::remove_var("CLAW_CONFIG_HOME"),
+        }
+        match original_claw_model {
+            Some(value) => std::env::set_var("CLAW_MODEL", value),
+            None => std::env::remove_var("CLAW_MODEL"),
+        }
+        match original_anthropic_model {
+            Some(value) => std::env::set_var("ANTHROPIC_MODEL", value),
+            None => std::env::remove_var("ANTHROPIC_MODEL"),
+        }
+        match original_backend {
+            Some(value) => std::env::set_var("CLAW_BACKEND", value),
+            None => std::env::remove_var("CLAW_BACKEND"),
+        }
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+
+        assert_eq!(resolved, "qwen/qwen3.5-27b");
     }
 
     #[test]
@@ -10595,7 +11052,7 @@ mod tests {
             let loader = ConfigLoader::default_for(&cwd);
             let runtime_config = loader.load().expect("runtime config should load");
             apply_runtime_env_from_config(&runtime_config);
-            check_auth_health(Some(&runtime_config))
+            check_auth_health(Some(&runtime_config), None)
         });
 
         assert_eq!(check.level, DiagnosticLevel::Ok);
@@ -11815,7 +12272,7 @@ UU conflicted.rs",
         let pre_hooks = state.feature_config.hooks().pre_tool_use();
         assert_eq!(pre_hooks.len(), 1);
         assert!(
-            pre_hooks[0].ends_with("hooks/pre.sh"),
+            pre_hooks[0].ends_with(&format!("hooks/pre.{}", test_script_extension())),
             "expected installed plugin hook path, got {pre_hooks:?}"
         );
 
@@ -11833,23 +12290,28 @@ UU conflicted.rs",
         fs::create_dir_all(&workspace).expect("workspace");
         let script_path = workspace.join("fixture-mcp.py");
         write_mcp_server_fixture(&script_path);
+        let python_command = std::env::var("PYTHON").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "python".to_string()
+            } else {
+                "python3".to_string()
+            }
+        });
+        let settings = serde_json::json!({
+            "mcpServers": {
+                "alpha": {
+                    "command": python_command,
+                    "args": [script_path.to_string_lossy().to_string()]
+                },
+                "broken": {
+                    "command": if cfg!(windows) { "python".to_string() } else { "python3".to_string() },
+                    "args": ["-c", "import sys; sys.exit(0)"]
+                }
+            }
+        });
         fs::write(
             config_home.join("settings.json"),
-            format!(
-                r#"{{
-                  "mcpServers": {{
-                    "alpha": {{
-                      "command": "python3",
-                      "args": ["{}"]
-                    }},
-                    "broken": {{
-                      "command": "python3",
-                      "args": ["-c", "import sys; sys.exit(0)"]
-                    }}
-                  }}
-                }}"#,
-                script_path.to_string_lossy()
-            ),
+            serde_json::to_string_pretty(&settings).expect("mcp settings should serialize"),
         )
         .expect("write mcp settings");
 
@@ -12024,6 +12486,7 @@ UU conflicted.rs",
             Session::new(),
             "runtime-plugin-lifecycle",
             DEFAULT_MODEL.to_string(),
+            None,
             vec!["test system prompt".to_string()],
             true,
             false,
@@ -12035,7 +12498,7 @@ UU conflicted.rs",
         .expect("runtime should build");
 
         assert_eq!(
-            fs::read_to_string(&log_path).expect("init log should exist"),
+            normalize_newlines(&fs::read_to_string(&log_path).expect("init log should exist")),
             "init\n"
         );
 
@@ -12044,7 +12507,7 @@ UU conflicted.rs",
             .expect("plugin shutdown should succeed");
 
         assert_eq!(
-            fs::read_to_string(&log_path).expect("shutdown log should exist"),
+            normalize_newlines(&fs::read_to_string(&log_path).expect("shutdown log should exist")),
             "init\nshutdown\n"
         );
 

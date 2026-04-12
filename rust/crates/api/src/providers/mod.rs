@@ -2,6 +2,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use runtime::{BackendTransport, RuntimeBackendConfig, RuntimeConfig};
 use serde::Serialize;
 
 use crate::error::ApiError;
@@ -87,6 +88,204 @@ impl ProviderMetadata {
             }
             ProviderKind::OpenAi => Some(openai_compat::OpenAiCompatConfig::openai()),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendBaseUrlSource {
+    Environment(String),
+    Config,
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBackendBaseUrl {
+    pub value: String,
+    pub source: BackendBaseUrlSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBackend {
+    pub id: String,
+    pub provider: ProviderKind,
+    pub transport: BackendTransport,
+    pub provider_label: String,
+    pub auth_env: Option<String>,
+    pub auth_token_env: Option<String>,
+    pub base_url_env: Option<String>,
+    pub configured_base_url: Option<String>,
+    pub default_base_url: Option<String>,
+    pub default_model: Option<String>,
+    pub request_stream_usage: bool,
+}
+
+impl ResolvedBackend {
+    #[must_use]
+    pub fn auth_env_vars(&self) -> Vec<String> {
+        let mut envs = Vec::new();
+        if let Some(auth_env) = &self.auth_env {
+            envs.push(auth_env.clone());
+        }
+        if let Some(auth_token_env) = &self.auth_token_env {
+            envs.push(auth_token_env.clone());
+        }
+        envs
+    }
+
+    #[must_use]
+    pub fn openai_compat_config(&self) -> Option<openai_compat::OpenAiCompatConfig> {
+        (self.transport == BackendTransport::OpenAiCompatible).then(|| {
+            openai_compat::OpenAiCompatConfig::custom(
+                self.provider_label.clone(),
+                self.auth_env.clone(),
+                self.base_url_env.clone(),
+                self.default_base_url.clone(),
+                self.configured_base_url.clone(),
+                self.request_stream_usage,
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn resolved_base_url(&self) -> Option<ResolvedBackendBaseUrl> {
+        match self.transport {
+            BackendTransport::OpenAiCompatible => {
+                let config = self.openai_compat_config()?;
+                let resolution = openai_compat::resolve_base_url(&config);
+                Some(ResolvedBackendBaseUrl {
+                    value: resolution.value,
+                    source: match resolution.source {
+                        openai_compat::BaseUrlSource::Environment(env_key) => {
+                            BackendBaseUrlSource::Environment(env_key)
+                        }
+                        openai_compat::BaseUrlSource::Config => BackendBaseUrlSource::Config,
+                        openai_compat::BaseUrlSource::Default => BackendBaseUrlSource::Default,
+                    },
+                })
+            }
+            BackendTransport::Anthropic => {
+                if let Some(env_key) = self.base_url_env.as_deref() {
+                    if let Some(value) = env_or_dotenv_value(env_key) {
+                        return Some(ResolvedBackendBaseUrl {
+                            value,
+                            source: BackendBaseUrlSource::Environment(env_key.to_string()),
+                        });
+                    }
+                }
+                if let Some(configured_base_url) = self.configured_base_url.as_ref() {
+                    return Some(ResolvedBackendBaseUrl {
+                        value: configured_base_url.clone(),
+                        source: BackendBaseUrlSource::Config,
+                    });
+                }
+                self.default_base_url
+                    .as_ref()
+                    .map(|value| ResolvedBackendBaseUrl {
+                        value: value.clone(),
+                        source: BackendBaseUrlSource::Default,
+                    })
+            }
+        }
+    }
+}
+
+fn resolved_backend_from_metadata(
+    id: impl Into<String>,
+    metadata: ProviderMetadata,
+) -> ResolvedBackend {
+    ResolvedBackend {
+        id: id.into(),
+        provider: metadata.provider,
+        transport: match metadata.provider {
+            ProviderKind::Anthropic => BackendTransport::Anthropic,
+            ProviderKind::Xai | ProviderKind::OpenAi => BackendTransport::OpenAiCompatible,
+        },
+        provider_label: metadata.provider_label.to_string(),
+        auth_env: Some(metadata.auth_env.to_string()),
+        auth_token_env: (metadata.provider == ProviderKind::Anthropic)
+            .then_some("ANTHROPIC_AUTH_TOKEN".to_string()),
+        base_url_env: Some(metadata.base_url_env.to_string()),
+        configured_base_url: None,
+        default_base_url: Some(metadata.default_base_url.to_string()),
+        default_model: None,
+        request_stream_usage: matches!(metadata.auth_env, "OPENAI_API_KEY"),
+    }
+}
+
+fn builtin_backend(backend_id: &str) -> Option<ResolvedBackend> {
+    match backend_id {
+        "anthropic" => Some(ResolvedBackend {
+            provider_label: "anthropic".to_string(),
+            ..resolved_backend_from_metadata("anthropic", ANTHROPIC_METADATA)
+        }),
+        "openai" => Some(ResolvedBackend {
+            id: "openai".to_string(),
+            provider: ProviderKind::OpenAi,
+            transport: BackendTransport::OpenAiCompatible,
+            provider_label: "openai".to_string(),
+            auth_env: Some("OPENAI_API_KEY".to_string()),
+            auth_token_env: None,
+            base_url_env: Some("OPENAI_BASE_URL".to_string()),
+            configured_base_url: None,
+            default_base_url: Some(openai_compat::DEFAULT_OPENAI_BASE_URL.to_string()),
+            default_model: None,
+            request_stream_usage: true,
+        }),
+        "xai" => Some(ResolvedBackend {
+            provider_label: "xai".to_string(),
+            ..resolved_backend_from_metadata("xai", XAI_METADATA)
+        }),
+        "dashscope" => Some(ResolvedBackend {
+            provider_label: "dashscope".to_string(),
+            ..resolved_backend_from_metadata("dashscope", DASHSCOPE_METADATA)
+        }),
+        "openrouter" => Some(ResolvedBackend {
+            id: "openrouter".to_string(),
+            provider: ProviderKind::OpenAi,
+            transport: BackendTransport::OpenAiCompatible,
+            provider_label: "openrouter".to_string(),
+            auth_env: Some("OPENROUTER_API_KEY".to_string()),
+            auth_token_env: None,
+            base_url_env: Some("OPENROUTER_BASE_URL".to_string()),
+            configured_base_url: None,
+            default_base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            default_model: None,
+            request_stream_usage: true,
+        }),
+        _ => None,
+    }
+}
+
+fn resolved_backend_from_runtime_config(
+    backend_id: &str,
+    backend: &RuntimeBackendConfig,
+) -> ResolvedBackend {
+    let provider = match backend.transport {
+        BackendTransport::Anthropic => ProviderKind::Anthropic,
+        BackendTransport::OpenAiCompatible => ProviderKind::OpenAi,
+    };
+    ResolvedBackend {
+        id: backend_id.to_string(),
+        provider,
+        transport: backend.transport,
+        provider_label: backend.provider_label.clone(),
+        auth_env: backend.api_key_env.clone().or_else(|| {
+            (backend.transport == BackendTransport::Anthropic)
+                .then_some("ANTHROPIC_API_KEY".to_string())
+        }),
+        auth_token_env: (backend.transport == BackendTransport::Anthropic)
+            .then_some("ANTHROPIC_AUTH_TOKEN".to_string()),
+        base_url_env: backend.base_url_env.clone().or_else(|| match backend.transport {
+            BackendTransport::Anthropic => Some("ANTHROPIC_BASE_URL".to_string()),
+            BackendTransport::OpenAiCompatible => None,
+        }),
+        configured_base_url: backend.base_url.clone(),
+        default_base_url: Some(match backend.transport {
+            BackendTransport::Anthropic => anthropic::DEFAULT_BASE_URL.to_string(),
+            BackendTransport::OpenAiCompatible => openai_compat::DEFAULT_OPENAI_BASE_URL.to_string(),
+        }),
+        default_model: backend.default_model.clone(),
+        request_stream_usage: backend.transport == BackendTransport::OpenAiCompatible,
     }
 }
 
@@ -176,6 +375,55 @@ pub const fn fallback_metadata_for_provider(kind: ProviderKind) -> ProviderMetad
 pub fn resolved_metadata_for_model(model: &str) -> ProviderMetadata {
     metadata_for_model(model)
         .unwrap_or_else(|| fallback_metadata_for_provider(detect_provider_kind(model)))
+}
+
+fn configured_backend_override() -> Option<String> {
+    std::env::var("CLAW_BACKEND")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_named_backend(
+    backend_id: &str,
+    runtime_config: Option<&RuntimeConfig>,
+) -> Result<ResolvedBackend, ApiError> {
+    if let Some(runtime_backend) = runtime_config.and_then(|config| config.backends().get(backend_id))
+    {
+        return Ok(resolved_backend_from_runtime_config(
+            backend_id,
+            runtime_backend,
+        ));
+    }
+    if let Some(builtin) = builtin_backend(backend_id) {
+        return Ok(builtin);
+    }
+    Err(ApiError::Auth(format!(
+        "unknown backend `{backend_id}`; configure it under settings.backends or choose one of anthropic, openai, xai, dashscope, openrouter"
+    )))
+}
+
+fn legacy_resolved_backend_for_model(model: &str) -> ResolvedBackend {
+    let metadata = resolved_metadata_for_model(model);
+    resolved_backend_from_metadata(metadata.provider_label, metadata)
+}
+
+pub fn resolve_backend(
+    model: &str,
+    runtime_config: Option<&RuntimeConfig>,
+    explicit_backend: Option<&str>,
+) -> Result<ResolvedBackend, ApiError> {
+    let backend_id = explicit_backend
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(configured_backend_override)
+        .or_else(|| runtime_config.and_then(RuntimeConfig::backend).map(ToOwned::to_owned));
+
+    match backend_id {
+        Some(backend_id) => resolve_named_backend(&backend_id, runtime_config),
+        None => Ok(legacy_resolved_backend_for_model(model)),
+    }
 }
 
 #[must_use]
@@ -305,14 +553,18 @@ const FOREIGN_PROVIDER_ENV_VARS: &[(&str, &str, &str)] = &[
 /// process environment or in the working-directory `.env` file. Mirrors the
 /// credential discovery path used by `read_env_non_empty` so the hint text
 /// stays truthful when users rely on `.env` instead of a real export.
-fn env_or_dotenv_present(key: &str) -> bool {
+fn env_or_dotenv_value(key: &str) -> Option<String> {
     match std::env::var(key) {
-        Ok(value) if !value.is_empty() => true,
+        Ok(value) if !value.is_empty() => Some(value),
         Ok(_) | Err(std::env::VarError::NotPresent) => {
-            dotenv_value(key).is_some_and(|value| !value.is_empty())
+            dotenv_value(key).filter(|value| !value.is_empty())
         }
-        Err(_) => false,
+        Err(_) => None,
     }
+}
+
+fn env_or_dotenv_present(key: &str) -> bool {
+    env_or_dotenv_value(key).is_some()
 }
 
 /// Produce a hint string describing the first foreign provider credential
@@ -404,9 +656,12 @@ pub(crate) fn dotenv_value(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
     use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde_json::json;
+    use runtime::ConfigLoader;
 
     use crate::error::ApiError;
     use crate::types::{
@@ -416,8 +671,8 @@ mod tests {
     use super::{
         anthropic_missing_credentials, anthropic_missing_credentials_hint, detect_provider_kind,
         load_dotenv_file, max_tokens_for_model, max_tokens_for_model_with_override,
-        model_token_limit, parse_dotenv, preflight_message_request, resolve_model_alias,
-        ProviderKind,
+        model_token_limit, parse_dotenv, preflight_message_request, resolve_backend,
+        resolve_model_alias, ProviderKind,
     };
 
     /// Serializes every test in this module that mutates process-wide
@@ -458,6 +713,14 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
+    }
+
+    fn temp_dir() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("api-providers-{nanos}"))
     }
 
     #[test]
@@ -553,16 +816,79 @@ mod tests {
         let openai_config = openai_meta
             .openai_compat_config()
             .expect("OpenAI-compatible metadata should yield a transport config");
-        assert_eq!(openai_config.api_key_env, "OPENAI_API_KEY");
-        assert_eq!(openai_config.base_url_env, "OPENAI_BASE_URL");
+        assert_eq!(openai_config.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(openai_config.base_url_env.as_deref(), Some("OPENAI_BASE_URL"));
 
         let dashscope_meta = super::metadata_for_model("qwen-plus")
             .expect("qwen-* prefix must resolve to DashScope metadata");
         let dashscope_config = dashscope_meta
             .openai_compat_config()
             .expect("DashScope metadata should yield a transport config");
-        assert_eq!(dashscope_config.api_key_env, "DASHSCOPE_API_KEY");
-        assert_eq!(dashscope_config.base_url_env, "DASHSCOPE_BASE_URL");
+        assert_eq!(dashscope_config.api_key_env.as_deref(), Some("DASHSCOPE_API_KEY"));
+        assert_eq!(
+            dashscope_config.base_url_env.as_deref(),
+            Some("DASHSCOPE_BASE_URL")
+        );
+    }
+
+    #[test]
+    fn explicit_openrouter_backend_overrides_qwen_prefix_routing() {
+        let backend = resolve_backend("qwen/qwen3.5-27b", None, Some("openrouter"))
+            .expect("explicit openrouter backend should resolve");
+        assert_eq!(backend.id, "openrouter");
+        assert_eq!(backend.provider, ProviderKind::OpenAi);
+        assert_eq!(backend.provider_label, "openrouter");
+        assert_eq!(backend.auth_env.as_deref(), Some("OPENROUTER_API_KEY"));
+        assert_eq!(
+            backend.resolved_base_url().map(|value| value.value),
+            Some("https://openrouter.ai/api/v1".to_string())
+        );
+    }
+
+    #[test]
+    fn custom_openai_compatible_backend_resolves_from_runtime_config() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(cwd.join(".claw")).expect("project config dir");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::write(
+            cwd.join(".claw").join("settings.json"),
+            r#"{
+              "backend": "droplet-qwen",
+              "backends": {
+                "droplet-qwen": {
+                  "transport": "openai-compatible",
+                  "providerLabel": "droplet-qwen",
+                  "apiKeyEnv": "DROPLET_QWEN_API_KEY",
+                  "baseUrl": "http://127.0.0.1:8000/v1",
+                  "defaultModel": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ"
+                }
+              }
+            }"#,
+        )
+        .expect("write backend config");
+
+        let runtime_config = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect("config should load");
+        let backend = resolve_backend("qwen-plus", Some(&runtime_config), None)
+            .expect("custom backend should resolve");
+
+        assert_eq!(backend.id, "droplet-qwen");
+        assert_eq!(backend.provider, ProviderKind::OpenAi);
+        assert_eq!(backend.provider_label, "droplet-qwen");
+        assert_eq!(backend.auth_env.as_deref(), Some("DROPLET_QWEN_API_KEY"));
+        assert_eq!(
+            backend.default_model.as_deref(),
+            Some("Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
+        );
+        assert_eq!(
+            backend.resolved_base_url().map(|value| value.value),
+            Some("http://127.0.0.1:8000/v1".to_string())
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

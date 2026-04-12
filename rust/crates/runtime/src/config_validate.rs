@@ -150,6 +150,10 @@ const TOP_LEVEL_FIELDS: &[FieldSpec] = &[
         expected: FieldType::String,
     },
     FieldSpec {
+        name: "backend",
+        expected: FieldType::String,
+    },
+    FieldSpec {
         name: "hooks",
         expected: FieldType::Object,
     },
@@ -187,6 +191,10 @@ const TOP_LEVEL_FIELDS: &[FieldSpec] = &[
     },
     FieldSpec {
         name: "aliases",
+        expected: FieldType::Object,
+    },
+    FieldSpec {
+        name: "backends",
         expected: FieldType::Object,
     },
     FieldSpec {
@@ -307,6 +315,33 @@ const OAUTH_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "scopes",
         expected: FieldType::StringArray,
+    },
+];
+
+const BACKEND_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "transport",
+        expected: FieldType::String,
+    },
+    FieldSpec {
+        name: "providerLabel",
+        expected: FieldType::String,
+    },
+    FieldSpec {
+        name: "apiKeyEnv",
+        expected: FieldType::String,
+    },
+    FieldSpec {
+        name: "baseUrl",
+        expected: FieldType::String,
+    },
+    FieldSpec {
+        name: "baseUrlEnv",
+        expected: FieldType::String,
+    },
+    FieldSpec {
+        name: "defaultModel",
+        expected: FieldType::String,
     },
 ];
 
@@ -500,6 +535,30 @@ pub fn validate_config_file(
             source,
             &path_display,
         ));
+    }
+    if let Some(backends) = object.get("backends").and_then(JsonValue::as_object) {
+        for (backend_id, backend_value) in backends {
+            let field_path = format!("backends.{backend_id}");
+            let Some(backend_object) = backend_value.as_object() else {
+                result.errors.push(ConfigDiagnostic {
+                    path: path_display.clone(),
+                    field: field_path,
+                    line: find_key_line(source, backend_id),
+                    kind: DiagnosticKind::WrongType {
+                        expected: "an object",
+                        got: json_type_label(backend_value),
+                    },
+                });
+                continue;
+            };
+            result.merge(validate_object_keys(
+                backend_object,
+                BACKEND_FIELDS,
+                &field_path,
+                source,
+                &path_display,
+            ));
+        }
     }
 
     result
@@ -730,10 +789,50 @@ mod tests {
     }
 
     #[test]
+    fn validates_nested_backend_keys() {
+        let source = r#"{"backends": {"droplet": {"transport": "openai-compatible", "unknown": true}}}"#;
+        let parsed = JsonValue::parse(source).expect("valid json");
+        let object = parsed.as_object().expect("object");
+
+        let result = validate_config_file(object, source, &test_path());
+
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].field, "backends.droplet.unknown");
+    }
+
+    #[test]
+    fn backend_entries_must_be_objects() {
+        let source = r#"{"backends": {"droplet": "http://example.test"}}"#;
+        let parsed = JsonValue::parse(source).expect("valid json");
+        let object = parsed.as_object().expect("object");
+
+        let result = validate_config_file(object, source, &test_path());
+
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].field, "backends.droplet");
+        assert!(matches!(
+            result.errors[0].kind,
+            DiagnosticKind::WrongType {
+                expected: "an object",
+                got: "a string"
+            }
+        ));
+    }
+
+    #[test]
     fn valid_config_produces_no_diagnostics() {
         // given
         let source = r#"{
+  "backend": "openrouter",
   "model": "opus",
+  "backends": {
+    "openrouter": {
+      "transport": "openai-compatible",
+      "providerLabel": "openrouter",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "baseUrl": "https://openrouter.ai/api/v1"
+    }
+  },
   "hooks": {"PreToolUse": ["guard"]},
   "permissions": {"defaultMode": "plan", "allow": ["Read"]},
   "mcpServers": {},

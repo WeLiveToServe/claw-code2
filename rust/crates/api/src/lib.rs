@@ -22,8 +22,9 @@ pub use providers::anthropic::{AnthropicClient, AnthropicClient as ApiClient, Au
 pub use providers::openai_compat::{OpenAiCompatClient, OpenAiCompatConfig};
 pub use providers::{
     detect_provider_kind, fallback_metadata_for_provider, max_tokens_for_model,
-    max_tokens_for_model_with_override, metadata_for_model, resolve_model_alias,
-    resolved_metadata_for_model, ProviderKind, ProviderMetadata,
+    max_tokens_for_model_with_override, metadata_for_model, resolve_backend,
+    resolve_model_alias, resolved_metadata_for_model, BackendBaseUrlSource, ProviderKind,
+    ProviderMetadata, ResolvedBackend, ResolvedBackendBaseUrl,
 };
 pub use sse::{parse_frame, SseParser};
 pub use types::{

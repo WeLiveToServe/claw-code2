@@ -25,41 +25,48 @@ const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(128);
 const DEFAULT_MAX_RETRIES: u32 = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAiCompatConfig {
-    pub provider_name: &'static str,
-    pub api_key_env: &'static str,
-    pub credential_env_vars: &'static [&'static str],
-    pub base_url_env: &'static str,
-    pub default_base_url: &'static str,
+    pub provider_name: String,
+    pub api_key_env: Option<String>,
+    pub credential_env_vars: Vec<String>,
+    pub static_missing_credentials: Option<(&'static str, &'static [&'static str])>,
+    pub base_url_env: Option<String>,
+    pub default_base_url: Option<String>,
+    pub configured_base_url: Option<String>,
     pub request_stream_usage: bool,
 }
 
 const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
 const DASHSCOPE_ENV_VARS: &[&str] = &["DASHSCOPE_API_KEY"];
+const OPENROUTER_ENV_VARS: &[&str] = &["OPENROUTER_API_KEY"];
 
 impl OpenAiCompatConfig {
     #[must_use]
-    pub const fn xai() -> Self {
+    pub fn xai() -> Self {
         Self {
-            provider_name: "xAI",
-            api_key_env: "XAI_API_KEY",
-            credential_env_vars: XAI_ENV_VARS,
-            base_url_env: "XAI_BASE_URL",
-            default_base_url: DEFAULT_XAI_BASE_URL,
+            provider_name: "xAI".to_string(),
+            api_key_env: Some("XAI_API_KEY".to_string()),
+            credential_env_vars: XAI_ENV_VARS.iter().map(ToString::to_string).collect(),
+            static_missing_credentials: Some(("xAI", XAI_ENV_VARS)),
+            base_url_env: Some("XAI_BASE_URL".to_string()),
+            default_base_url: Some(DEFAULT_XAI_BASE_URL.to_string()),
+            configured_base_url: None,
             request_stream_usage: false,
         }
     }
 
     #[must_use]
-    pub const fn openai() -> Self {
+    pub fn openai() -> Self {
         Self {
-            provider_name: "OpenAI",
-            api_key_env: "OPENAI_API_KEY",
-            credential_env_vars: OPENAI_ENV_VARS,
-            base_url_env: "OPENAI_BASE_URL",
-            default_base_url: DEFAULT_OPENAI_BASE_URL,
+            provider_name: "OpenAI".to_string(),
+            api_key_env: Some("OPENAI_API_KEY".to_string()),
+            credential_env_vars: OPENAI_ENV_VARS.iter().map(ToString::to_string).collect(),
+            static_missing_credentials: Some(("OpenAI", OPENAI_ENV_VARS)),
+            base_url_env: Some("OPENAI_BASE_URL".to_string()),
+            default_base_url: Some(DEFAULT_OPENAI_BASE_URL.to_string()),
+            configured_base_url: None,
             request_stream_usage: true,
         }
     }
@@ -69,27 +76,68 @@ impl OpenAiCompatConfig {
     /// Requested via Discord #clawcode-get-help: native Alibaba API for
     /// higher rate limits than going through OpenRouter.
     #[must_use]
-    pub const fn dashscope() -> Self {
+    pub fn dashscope() -> Self {
         Self {
-            provider_name: "DashScope",
-            api_key_env: "DASHSCOPE_API_KEY",
-            credential_env_vars: DASHSCOPE_ENV_VARS,
-            base_url_env: "DASHSCOPE_BASE_URL",
-            default_base_url: DEFAULT_DASHSCOPE_BASE_URL,
+            provider_name: "DashScope".to_string(),
+            api_key_env: Some("DASHSCOPE_API_KEY".to_string()),
+            credential_env_vars: DASHSCOPE_ENV_VARS.iter().map(ToString::to_string).collect(),
+            static_missing_credentials: Some(("DashScope", DASHSCOPE_ENV_VARS)),
+            base_url_env: Some("DASHSCOPE_BASE_URL".to_string()),
+            default_base_url: Some(DEFAULT_DASHSCOPE_BASE_URL.to_string()),
+            configured_base_url: None,
             request_stream_usage: false,
         }
     }
 
     #[must_use]
-    pub fn credential_env_vars(self) -> &'static [&'static str] {
-        self.credential_env_vars
+    pub fn openrouter() -> Self {
+        Self {
+            provider_name: "OpenRouter".to_string(),
+            api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+            credential_env_vars: OPENROUTER_ENV_VARS
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            static_missing_credentials: Some(("OpenRouter", OPENROUTER_ENV_VARS)),
+            base_url_env: Some("OPENROUTER_BASE_URL".to_string()),
+            default_base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            configured_base_url: None,
+            request_stream_usage: true,
+        }
+    }
+
+    #[must_use]
+    pub fn custom(
+        provider_name: impl Into<String>,
+        api_key_env: Option<String>,
+        base_url_env: Option<String>,
+        default_base_url: Option<String>,
+        configured_base_url: Option<String>,
+        request_stream_usage: bool,
+    ) -> Self {
+        let credential_env_vars = api_key_env.iter().cloned().collect();
+        Self {
+            provider_name: provider_name.into(),
+            api_key_env,
+            credential_env_vars,
+            static_missing_credentials: None,
+            base_url_env,
+            default_base_url,
+            configured_base_url,
+            request_stream_usage,
+        }
+    }
+
+    #[must_use]
+    pub fn credential_env_vars(&self) -> &[String] {
+        &self.credential_env_vars
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatClient {
     http: reqwest::Client,
-    api_key: String,
+    api_key: Option<String>,
     config: OpenAiCompatConfig,
     base_url: String,
     max_retries: u32,
@@ -98,8 +146,8 @@ pub struct OpenAiCompatClient {
 }
 
 impl OpenAiCompatClient {
-    const fn config(&self) -> OpenAiCompatConfig {
-        self.config
+    fn config(&self) -> &OpenAiCompatConfig {
+        &self.config
     }
 
     #[must_use]
@@ -107,12 +155,12 @@ impl OpenAiCompatClient {
         &self.base_url
     }
     #[must_use]
-    pub fn new(api_key: impl Into<String>, config: OpenAiCompatConfig) -> Self {
+    pub fn new(api_key: Option<String>, config: OpenAiCompatConfig) -> Self {
         Self {
             http: build_http_client_or_default(),
-            api_key: api_key.into(),
+            api_key,
+            base_url: read_base_url(&config),
             config,
-            base_url: read_base_url(config),
             max_retries: DEFAULT_MAX_RETRIES,
             initial_backoff: DEFAULT_INITIAL_BACKOFF,
             max_backoff: DEFAULT_MAX_BACKOFF,
@@ -120,11 +168,24 @@ impl OpenAiCompatClient {
     }
 
     pub fn from_env(config: OpenAiCompatConfig) -> Result<Self, ApiError> {
-        let Some(api_key) = read_env_non_empty(config.api_key_env)? else {
-            return Err(ApiError::missing_credentials(
-                config.provider_name,
-                config.credential_env_vars(),
-            ));
+        let api_key = match config.api_key_env.as_deref() {
+            Some(env_key) => {
+                let Some(api_key) = read_env_non_empty(env_key)? else {
+                    return match config.static_missing_credentials {
+                        Some((provider, env_vars)) => {
+                            Err(ApiError::missing_credentials(provider, env_vars))
+                        }
+                        None => Err(ApiError::Auth(format!(
+                            "missing {} credentials; export {} before calling the {} API",
+                            config.provider_name,
+                            config.credential_env_vars.join(" or "),
+                            config.provider_name
+                        ))),
+                    };
+                };
+                Some(api_key)
+            }
+            None => None,
         };
         Ok(Self::new(api_key, config))
     }
@@ -190,7 +251,12 @@ impl OpenAiCompatClient {
             }
         }
         let payload = serde_json::from_str::<ChatCompletionResponse>(&body).map_err(|error| {
-            ApiError::json_deserialize(self.config.provider_name, &request.model, &body, error)
+            ApiError::json_deserialize(
+                self.config.provider_name.clone(),
+                &request.model,
+                &body,
+                error,
+            )
         })?;
         let mut normalized = normalize_response(&request.model, payload)?;
         if normalized.request_id.is_none() {
@@ -210,7 +276,10 @@ impl OpenAiCompatClient {
         Ok(MessageStream {
             request_id: request_id_from_headers(response.headers()),
             response,
-            parser: OpenAiSseParser::with_context(self.config.provider_name, request.model.clone()),
+            parser: OpenAiSseParser::with_context(
+                self.config.provider_name.clone(),
+                request.model.clone(),
+            ),
             pending: VecDeque::new(),
             done: false,
             state: StreamState::new(request.model.clone()),
@@ -253,14 +322,17 @@ impl OpenAiCompatClient {
         request: &MessageRequest,
     ) -> Result<reqwest::Response, ApiError> {
         let request_url = chat_completions_endpoint(&self.base_url);
-        self.http
+        let request_builder = self
+            .http
             .post(&request_url)
             .header("content-type", "application/json")
-            .bearer_auth(&self.api_key)
-            .json(&build_chat_completion_request(request, self.config()))
-            .send()
-            .await
-            .map_err(ApiError::from)
+            .json(&build_chat_completion_request(request, self.config()));
+        let request_builder = if let Some(api_key) = &self.api_key {
+            request_builder.bearer_auth(api_key)
+        } else {
+            request_builder
+        };
+        request_builder.send().await.map_err(ApiError::from)
     }
 
     fn backoff_for_attempt(&self, attempt: u32) -> Result<Duration, ApiError> {
@@ -789,7 +861,7 @@ fn strip_routing_prefix(model: &str) -> &str {
     }
 }
 
-fn build_chat_completion_request(request: &MessageRequest, config: OpenAiCompatConfig) -> Value {
+fn build_chat_completion_request(request: &MessageRequest, config: &OpenAiCompatConfig) -> Value {
     let mut messages = Vec::new();
     if let Some(system) = request.system.as_ref().filter(|value| !value.is_empty()) {
         messages.push(json!({
@@ -1063,7 +1135,7 @@ fn openai_tool_choice(tool_choice: &ToolChoice) -> Value {
     }
 }
 
-fn should_request_stream_usage(config: OpenAiCompatConfig) -> bool {
+fn should_request_stream_usage(config: &OpenAiCompatConfig) -> bool {
     config.request_stream_usage
 }
 
@@ -1215,8 +1287,46 @@ pub fn has_api_key(key: &str) -> bool {
 }
 
 #[must_use]
-pub fn read_base_url(config: OpenAiCompatConfig) -> String {
-    std::env::var(config.base_url_env).unwrap_or_else(|_| config.default_base_url.to_string())
+pub fn read_base_url(config: &OpenAiCompatConfig) -> String {
+    resolve_base_url(config).value
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseUrlSource {
+    Environment(String),
+    Config,
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseUrlResolution {
+    pub value: String,
+    pub source: BaseUrlSource,
+}
+
+#[must_use]
+pub fn resolve_base_url(config: &OpenAiCompatConfig) -> BaseUrlResolution {
+    if let Some(env_key) = config.base_url_env.as_deref() {
+        if let Ok(Some(value)) = read_env_non_empty(env_key) {
+            return BaseUrlResolution {
+                value,
+                source: BaseUrlSource::Environment(env_key.to_string()),
+            };
+        }
+    }
+    if let Some(configured_base_url) = config.configured_base_url.as_ref() {
+        return BaseUrlResolution {
+            value: configured_base_url.clone(),
+            source: BaseUrlSource::Config,
+        };
+    }
+    BaseUrlResolution {
+        value: config
+            .default_base_url
+            .clone()
+            .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string()),
+        source: BaseUrlSource::Default,
+    }
 }
 
 fn chat_completions_endpoint(base_url: &str) -> String {
@@ -1334,7 +1444,7 @@ mod tests {
                 stream: false,
                 ..Default::default()
             },
-            OpenAiCompatConfig::xai(),
+            &OpenAiCompatConfig::xai(),
         );
 
         assert_eq!(payload["messages"][0]["role"], json!("system"));
@@ -1395,7 +1505,7 @@ mod tests {
                 reasoning_effort: Some("high".to_string()),
                 ..Default::default()
             },
-            OpenAiCompatConfig::openai(),
+            &OpenAiCompatConfig::openai(),
         );
         assert_eq!(payload["reasoning_effort"], json!("high"));
     }
@@ -1409,7 +1519,7 @@ mod tests {
                 messages: vec![InputMessage::user_text("hello")],
                 ..Default::default()
             },
-            OpenAiCompatConfig::openai(),
+            &OpenAiCompatConfig::openai(),
         );
         assert!(payload.get("reasoning_effort").is_none());
     }
@@ -1427,7 +1537,7 @@ mod tests {
                 stream: true,
                 ..Default::default()
             },
-            OpenAiCompatConfig::openai(),
+            &OpenAiCompatConfig::openai(),
         );
 
         assert_eq!(payload["stream_options"], json!({"include_usage": true}));
@@ -1446,7 +1556,7 @@ mod tests {
                 stream: true,
                 ..Default::default()
             },
-            OpenAiCompatConfig::xai(),
+            &OpenAiCompatConfig::xai(),
         );
 
         assert!(payload.get("stream_options").is_none());
@@ -1533,7 +1643,7 @@ mod tests {
             stop: Some(vec!["\n".to_string()]),
             reasoning_effort: None,
         };
-        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let payload = build_chat_completion_request(&request, &OpenAiCompatConfig::openai());
         assert_eq!(payload["temperature"], 0.7);
         assert_eq!(payload["top_p"], 0.9);
         assert_eq!(payload["frequency_penalty"], 0.5);
@@ -1555,7 +1665,7 @@ mod tests {
             stop: Some(vec!["\n".to_string()]),
             ..Default::default()
         };
-        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let payload = build_chat_completion_request(&request, &OpenAiCompatConfig::openai());
         assert!(
             payload.get("temperature").is_none(),
             "reasoning model should strip temperature"
@@ -1606,7 +1716,7 @@ mod tests {
             stream: false,
             ..Default::default()
         };
-        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let payload = build_chat_completion_request(&request, &OpenAiCompatConfig::openai());
         assert!(
             payload.get("temperature").is_none(),
             "temperature should be absent"
@@ -1628,7 +1738,7 @@ mod tests {
             stream: false,
             ..Default::default()
         };
-        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let payload = build_chat_completion_request(&request, &OpenAiCompatConfig::openai());
         assert_eq!(
             payload["max_completion_tokens"],
             json!(512),
@@ -1669,7 +1779,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// Regression: when building a multi-turn request where a prior assistant
     /// turn has no tool calls, the serialized assistant message must NOT include
     /// `tool_calls: []`. Some providers reject requests that carry an empty
@@ -1690,7 +1799,7 @@ mod tests {
             stream: false,
             ..Default::default()
         };
-        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let payload = build_chat_completion_request(&request, &OpenAiCompatConfig::openai());
         let messages = payload["messages"].as_array().unwrap();
         let assistant_msg = messages
             .iter()
@@ -1723,7 +1832,7 @@ mod tests {
             stream: false,
             ..Default::default()
         };
-        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let payload = build_chat_completion_request(&request, &OpenAiCompatConfig::openai());
         let messages = payload["messages"].as_array().unwrap();
         let assistant_msg = messages
             .iter()
@@ -1791,7 +1900,7 @@ mod tests {
             stream: false,
             ..Default::default()
         };
-        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let payload = build_chat_completion_request(&request, &OpenAiCompatConfig::openai());
         assert_eq!(payload["max_tokens"], json!(512));
         assert!(
             payload.get("max_completion_tokens").is_none(),

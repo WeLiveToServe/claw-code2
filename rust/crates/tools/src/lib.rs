@@ -3759,8 +3759,18 @@ struct ProviderRuntimeClient {
 impl ProviderRuntimeClient {
     #[allow(clippy::needless_pass_by_value)]
     fn new(model: String, allowed_tools: BTreeSet<String>) -> Result<Self, String> {
-        let fallback_config = load_provider_fallback_config();
-        Self::new_with_fallback_config(model, allowed_tools, &fallback_config)
+        let runtime_config = load_runtime_config();
+        let fallback_config = runtime_config
+            .as_ref()
+            .map_or_else(ProviderFallbackConfig::default, |config| {
+                config.provider_fallbacks().clone()
+            });
+        Self::new_with_fallback_config(
+            model,
+            allowed_tools,
+            &fallback_config,
+            runtime_config.as_ref(),
+        )
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -3768,15 +3778,16 @@ impl ProviderRuntimeClient {
         model: String,
         allowed_tools: BTreeSet<String>,
         fallback_config: &ProviderFallbackConfig,
+        runtime_config: Option<&runtime::RuntimeConfig>,
     ) -> Result<Self, String> {
         let primary_model = fallback_config
             .primary()
             .map(str::to_string)
             .unwrap_or(model);
-        let primary = build_provider_entry(&primary_model)?;
+        let primary = build_provider_entry(&primary_model, runtime_config)?;
         let mut chain = vec![primary];
         for fallback_model in fallback_config.fallbacks() {
-            match build_provider_entry(fallback_model) {
+            match build_provider_entry(fallback_model, runtime_config) {
                 Ok(entry) => chain.push(entry),
                 Err(error) => {
                     eprintln!(
@@ -3793,22 +3804,28 @@ impl ProviderRuntimeClient {
     }
 }
 
-fn build_provider_entry(model: &str) -> Result<ProviderEntry, String> {
+fn build_provider_entry(
+    model: &str,
+    runtime_config: Option<&runtime::RuntimeConfig>,
+) -> Result<ProviderEntry, String> {
     let resolved = resolve_model_alias(model).clone();
-    let client = ProviderClient::from_model(&resolved).map_err(|error| error.to_string())?;
+    let explicit_backend = std::env::var("CLAW_BACKEND").ok();
+    let client = ProviderClient::from_model_with_runtime_config(
+        &resolved,
+        runtime_config,
+        explicit_backend.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(ProviderEntry {
         model: resolved,
         client,
     })
 }
 
-fn load_provider_fallback_config() -> ProviderFallbackConfig {
+fn load_runtime_config() -> Option<runtime::RuntimeConfig> {
     std::env::current_dir()
         .ok()
         .and_then(|cwd| ConfigLoader::default_for(cwd).load().ok())
-        .map_or_else(ProviderFallbackConfig::default, |config| {
-            config.provider_fallbacks().clone()
-        })
 }
 
 impl ApiClient for ProviderRuntimeClient {
