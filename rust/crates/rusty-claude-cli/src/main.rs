@@ -1300,6 +1300,17 @@ fn apply_runtime_env_overrides_for_current_dir() {
     let _ = apply_runtime_env_from_config(&runtime_config);
 }
 
+fn print_prompt_border(prompt: &str) {
+    let bar = "*".repeat(40);
+    let green = "\x1b[32m";
+    let reset = "\x1b[0m";
+    println!("{green}{bar}{reset}");
+    for line in prompt.lines() {
+        println!("{green}{line}{reset}");
+    }
+    println!("{green}{bar}{reset}");
+}
+
 fn format_connected_line(model: &str) -> String {
     let meta = resolved_metadata_for_model(model);
     let provider = meta.provider_label;
@@ -3608,12 +3619,14 @@ fn run_repl(
                     {
                         editor.push_history(input);
                         cli.record_prompt_history(&trimmed);
+                        print_prompt_border(&trimmed);
                         cli.run_turn(&prompt)?;
                         continue;
                     }
                 }
                 editor.push_history(input);
                 cli.record_prompt_history(&trimmed);
+                print_prompt_border(&trimmed);
                 cli.run_turn(&trimmed)?;
             }
             input::ReadOutcome::Cancel => {}
