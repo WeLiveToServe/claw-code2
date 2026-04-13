@@ -1323,19 +1323,62 @@ fn format_connected_line_with_backend(
     explicit_backend: Option<&str>,
     runtime_config: Option<&runtime::RuntimeConfig>,
 ) -> String {
-    let (provider, auth_env) = api::resolve_backend(model, runtime_config, explicit_backend)
-        .map(|backend| {
-            let auth = backend
-                .auth_env
-                .clone()
-                .unwrap_or_else(|| resolved_metadata_for_model(model).auth_env.to_string());
-            (backend.provider_label, auth)
-        })
-        .unwrap_or_else(|_| {
-            let meta = resolved_metadata_for_model(model);
-            (meta.provider_label.to_string(), meta.auth_env.to_string())
-        });
-    format!("Connected: {model} via {provider} ({auth_env})")
+    if let Ok(backend) = api::resolve_backend(model, runtime_config, explicit_backend) {
+        let base_url = backend.configured_base_url
+            .as_deref()
+            .or(backend.default_base_url.as_deref())
+            .unwrap_or("unknown");
+        let transport = describe_transport(base_url, &backend.provider_label);
+        format!("api connection: {transport}")
+    } else {
+        let meta = resolved_metadata_for_model(model);
+        format!("api connection: {} protocol via {}", meta.provider_label, meta.default_base_url)
+    }
+}
+
+fn describe_transport(base_url: &str, provider_label: &str) -> String {
+    let url_lower = base_url.to_lowercase();
+    if url_lower.contains("generativelanguage.googleapis.com") {
+        return format!("openai-compatible protocol via Google AI Studio ({base_url})");
+    }
+    if url_lower.contains("openrouter.ai") {
+        return format!("openai-compatible protocol via OpenRouter ({base_url})");
+    }
+    if url_lower.contains("api.anthropic.com") {
+        return format!("anthropic messages protocol via Anthropic API ({base_url})");
+    }
+    if url_lower.contains("api.openai.com") {
+        return format!("openai-compatible protocol via OpenAI API ({base_url})");
+    }
+    if url_lower.contains("api.x.ai") {
+        return format!("openai-compatible protocol via xAI ({base_url})");
+    }
+    if url_lower.contains("dashscope.aliyuncs.com") {
+        return format!("openai-compatible protocol via DashScope ({base_url})");
+    }
+    // Local/self-hosted inference
+    if url_lower.contains("localhost") || url_lower.contains("127.0.0.1") || url_lower.starts_with("http://10.") || url_lower.starts_with("http://192.168.") {
+        if url_lower.contains(":8080") || url_lower.contains("llama") {
+            return format!("openai-compatible protocol GGUF via llama.cpp ({base_url})");
+        }
+        if url_lower.contains(":8000") {
+            return format!("openai-compatible protocol via vLLM ({base_url})");
+        }
+        if url_lower.contains(":11434") {
+            return format!("openai-compatible protocol via Ollama ({base_url})");
+        }
+        return format!("openai-compatible protocol via local server ({base_url})");
+    }
+    // Remote self-hosted (non-localhost IPs or custom domains)
+    if url_lower.starts_with("http://") && !url_lower.contains("api.") {
+        if url_lower.contains(":8000") {
+            return format!("openai-compatible protocol via vLLM ({base_url})");
+        }
+        if url_lower.contains(":8080") {
+            return format!("openai-compatible protocol GGUF via llama.cpp ({base_url})");
+        }
+    }
+    format!("openai-compatible protocol via {provider_label} ({base_url})")
 }
 
 fn filter_tool_specs(
@@ -3576,8 +3619,8 @@ fn run_repl(
     let mut editor =
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
-    println!("{}", format_connected_line_with_backend(&cli.model, backend.as_deref(), None));
-    println!("\n\n\n");
+    println!("{}", format_connected_line_with_backend(&cli.model, backend.as_deref(), runtime_config_for_current_dir().as_ref()));
+    println!("\n");
 
     loop {
         editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());
@@ -4215,13 +4258,13 @@ impl LiveCli {
             })
             .unwrap_or_else(|| resolved_metadata_for_model(&self.model).auth_env.to_string());
         format!(
-            "\n\n\n\n\x1b[38;5;196m\
+            "\n\n\x1b[38;5;196m\
  ██████╗██╗      █████╗ ██╗    ██╗\n\
 ██╔════╝██║     ██╔══██╗██║    ██║\n\
 ██║     ██║     ███████║██║ █╗ ██║\n\
 ██║     ██║     ██╔══██║██║███╗██║\n\
 ╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
- ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
+ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\n\
   \x1b[2mModel\x1b[0m            {}\n\
   \x1b[2mAuth\x1b[0m             {}\n\
   \x1b[2mPermissions\x1b[0m      {}\n\
