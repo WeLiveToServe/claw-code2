@@ -1,8 +1,18 @@
 {
   "$schema": "SettingsSchema",
-  "model": "openai/gpt-4.1-mini",
+  "model": "gemini-2.5-flash",
+  "backend": "gemini",
+  "backends": {
+    "gemini": {
+      "transport": "openai-compatible",
+      "providerLabel": "Google AI Studio",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "defaultModel": "gemini-2.5-flash"
+    }
+  },
   "aliases": {
-    "fast": "openai/gpt-4.1-mini",
-    "smart": "openai/gpt-4.1-mini"
+    "fast": "gemini-2.5-flash",
+    "smart": "gemini-2.5-flash"
   }
 }

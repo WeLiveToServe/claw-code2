@@ -386,7 +386,11 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "bash",
-            description: "Execute a shell command in the current workspace.",
+            description: if cfg!(target_os = "windows") {
+                "Execute a command in the current workspace via PowerShell. Use PowerShell syntax (e.g. Get-ChildItem, Select-String, Remove-Item). Do NOT use Unix/bash commands like ls, grep, rm, cat, or sed — they are not available."
+            } else {
+                "Execute a shell command in the current workspace."
+            },
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -5172,12 +5176,22 @@ fn detect_powershell_shell() -> std::io::Result<&'static str> {
 }
 
 fn command_exists(command: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-lc")
-        .arg(format!("command -v {command} >/dev/null 2>&1"))
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    if cfg!(target_os = "windows") {
+        std::process::Command::new("where.exe")
+            .arg(command)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    } else {
+        std::process::Command::new("sh")
+            .arg("-lc")
+            .arg(format!("command -v {command} >/dev/null 2>&1"))
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 #[allow(clippy::too_many_lines)]

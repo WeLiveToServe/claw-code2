@@ -149,6 +149,7 @@ impl SystemPromptBuilder {
         }
         sections.push(get_simple_system_section());
         sections.push(get_simple_doing_tasks_section());
+        sections.push(get_response_style_section());
         sections.push(get_actions_section());
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
         sections.push(self.environment_section());
@@ -180,16 +181,21 @@ impl SystemPromptBuilder {
             |context| context.current_date.clone(),
         );
         let mut lines = vec!["# Environment context".to_string()];
-        lines.extend(prepend_bullets(vec![
+        let os = self.os_name.as_deref().unwrap_or("unknown");
+        let os_ver = self.os_version.as_deref().unwrap_or("unknown");
+        let mut bullets = vec![
             format!("Model family: {FRONTIER_MODEL_NAME}"),
             format!("Working directory: {cwd}"),
             format!("Date: {date}"),
-            format!(
-                "Platform: {} {}",
-                self.os_name.as_deref().unwrap_or("unknown"),
-                self.os_version.as_deref().unwrap_or("unknown")
-            ),
-        ]));
+            format!("Platform: {os} {os_ver}"),
+        ];
+        if os.to_lowercase().contains("windows") {
+            bullets.push(
+                "⚠ You are on Windows. Use dir/type/mkdir/findstr or PowerShell cmdlets for ALL shell commands. Unix commands (ls, cat, grep, find, rm, cp, mv) will fail."
+                    .to_string(),
+            );
+        }
+        lines.extend(prepend_bullets(bullets));
         lines.join("\n")
     }
 }
@@ -501,9 +507,28 @@ fn get_simple_doing_tasks_section() -> String {
         "If an approach fails, diagnose the failure before switching tactics.".to_string(),
         "Be careful not to introduce security vulnerabilities such as command injection, XSS, or SQL injection.".to_string(),
         "Report outcomes faithfully: if verification fails or was not run, say so explicitly.".to_string(),
+        "When generating code, follow the language's conventions: include type hints in Python, proper error handling with exit codes, and keep implementations concise.".to_string(),
+        "Prefer standard library solutions over external dependencies when possible.".to_string(),
+        "IMPORTANT — This is a Windows system. The bash tool executes via PowerShell. Use PowerShell cmdlets (Get-ChildItem, Get-Content, New-Item, etc.) or Windows commands (dir, type, mkdir). Do not use Unix-only commands (ls, cat, grep, find, chmod) — they do not exist here.".to_string(),
     ]);
 
     std::iter::once("# Doing tasks".to_string())
+        .chain(items)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn get_response_style_section() -> String {
+    let items = prepend_bullets(vec![
+        "Answer concisely with fewer than 4 lines of prose unless the user asks for detail.".to_string(),
+        "Do not add bullet-point lists summarizing what you just did — the user can see your tool calls.".to_string(),
+        "Do not re-explain code you just wrote unless asked.".to_string(),
+        "When creating files, show the file content and a brief usage note. Nothing more.".to_string(),
+        "Prefer taking action over asking clarifying questions when the intent is clear.".to_string(),
+        "When running shell commands, use the bash tool. Commands sent to this tool are executed via PowerShell on Windows.".to_string(),
+    ]);
+
+    std::iter::once("# Response style".to_string())
         .chain(items)
         .collect::<Vec<_>>()
         .join("\n")

@@ -218,7 +218,16 @@ impl OpenAiCompatClient {
             ..request.clone()
         };
         preflight_message_request(&request)?;
-        let response = self.send_with_retry(&request).await?;
+        let response = match self.send_with_retry(&request).await {
+            Ok(response) => response,
+            Err(error) if should_retry_without_tools(&error, &request) => {
+                let mut fallback_request = request.clone();
+                fallback_request.tools = None;
+                fallback_request.tool_choice = None;
+                self.send_with_retry(&fallback_request).await?
+            }
+            Err(error) => return Err(error),
+        };
         let request_id = request_id_from_headers(response.headers());
         let body = response.text().await.map_err(ApiError::from)?;
         // Some backends return {"error":{"message":"...","type":"...","code":...}}
@@ -270,9 +279,17 @@ impl OpenAiCompatClient {
         request: &MessageRequest,
     ) -> Result<MessageStream, ApiError> {
         preflight_message_request(request)?;
-        let response = self
-            .send_with_retry(&request.clone().with_streaming())
-            .await?;
+        let stream_request = request.clone().with_streaming();
+        let response = match self.send_with_retry(&stream_request).await {
+            Ok(response) => response,
+            Err(error) if should_retry_without_tools(&error, &stream_request) => {
+                let mut fallback_request = stream_request.clone();
+                fallback_request.tools = None;
+                fallback_request.tool_choice = None;
+                self.send_with_retry(&fallback_request).await?
+            }
+            Err(error) => return Err(error),
+        };
         Ok(MessageStream {
             request_id: request_id_from_headers(response.headers()),
             response,
@@ -520,7 +537,7 @@ impl StreamState {
             self.message_started = true;
             events.push(StreamEvent::MessageStart(MessageStartEvent {
                 message: MessageResponse {
-                    id: chunk.id.clone(),
+                    id: chunk.id.clone().unwrap_or_default(),
                     kind: "message".to_string(),
                     role: "assistant".to_string(),
                     content: Vec::new(),
@@ -588,6 +605,12 @@ impl StreamState {
             }
 
             if let Some(finish_reason) = choice.finish_reason {
+                if is_malformed_function_call_reason(&finish_reason) {
+                    // Gemini returned MALFORMED_FUNCTION_CALL — discard any
+                    // in-progress tool call blocks so the response is treated
+                    // as text-only rather than crashing downstream.
+                    self.tool_calls.clear();
+                }
                 self.stop_reason = Some(normalize_finish_reason(&finish_reason));
                 if finish_reason == "tool_calls" {
                     for state in self.tool_calls.values_mut() {
@@ -750,14 +773,18 @@ struct ChatMessage {
 
 #[derive(Debug, Deserialize)]
 struct ResponseToolCall {
-    id: String,
-    function: ResponseToolFunction,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<ResponseToolFunction>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ResponseToolFunction {
-    name: String,
-    arguments: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -770,7 +797,8 @@ struct OpenAiUsage {
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionChunk {
-    id: String,
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
@@ -1139,6 +1167,51 @@ fn should_request_stream_usage(config: &OpenAiCompatConfig) -> bool {
     config.request_stream_usage
 }
 
+fn should_retry_without_tools(error: &ApiError, request: &MessageRequest) -> bool {
+    let uses_tools = request.tools.as_ref().is_some_and(|tools| !tools.is_empty())
+        || request.tool_choice.is_some();
+    uses_tools && is_auto_tool_choice_unsupported_error(error)
+}
+
+fn is_auto_tool_choice_unsupported_error(error: &ApiError) -> bool {
+    match error {
+        ApiError::Api {
+            status,
+            message,
+            body,
+            ..
+        } => {
+            if *status != reqwest::StatusCode::BAD_REQUEST {
+                return false;
+            }
+            let message_matches = message
+                .as_deref()
+                .is_some_and(contains_vllm_auto_tool_choice_marker);
+            message_matches || contains_vllm_auto_tool_choice_marker(body)
+        }
+        ApiError::RetriesExhausted { last_error, .. } => {
+            is_auto_tool_choice_unsupported_error(last_error)
+        }
+        ApiError::MissingCredentials { .. }
+        | ApiError::ContextWindowExceeded { .. }
+        | ApiError::ExpiredOAuthToken
+        | ApiError::Auth(_)
+        | ApiError::InvalidApiKeyEnv(_)
+        | ApiError::Http(_)
+        | ApiError::Io(_)
+        | ApiError::Json { .. }
+        | ApiError::InvalidSseFrame(_)
+        | ApiError::BackoffOverflow { .. } => false,
+    }
+}
+
+fn contains_vllm_auto_tool_choice_marker(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("tool choice requires --enable-auto-tool-choice")
+        || (lowered.contains("--enable-auto-tool-choice")
+            && lowered.contains("--tool-call-parser"))
+}
+
 fn normalize_response(
     model: &str,
     response: ChatCompletionResponse,
@@ -1154,12 +1227,31 @@ fn normalize_response(
     if let Some(text) = choice.message.content.filter(|value| !value.is_empty()) {
         content.push(OutputContentBlock::Text { text });
     }
-    for tool_call in choice.message.tool_calls {
-        content.push(OutputContentBlock::ToolUse {
-            id: tool_call.id,
-            name: tool_call.function.name,
-            input: parse_tool_arguments(&tool_call.function.arguments),
-        });
+    // When Gemini (or similar providers) returns finish_reason
+    // "MALFORMED_FUNCTION_CALL", the tool call entries have null/missing
+    // id/name/arguments fields. Discard them and treat as text-only.
+    let is_malformed = choice
+        .finish_reason
+        .as_deref()
+        .is_some_and(is_malformed_function_call_reason);
+    if !is_malformed {
+        for tool_call in choice.message.tool_calls {
+            let Some(function) = tool_call.function else {
+                continue;
+            };
+            let Some(name) = function.name else {
+                continue;
+            };
+            let id = tool_call
+                .id
+                .unwrap_or_else(|| format!("tool_call_{}", content.len()));
+            let arguments = function.arguments.as_deref().unwrap_or("{}");
+            content.push(OutputContentBlock::ToolUse {
+                id,
+                name,
+                input: parse_tool_arguments(arguments),
+            });
+        }
     }
 
     Ok(MessageResponse {
@@ -1376,12 +1468,20 @@ const fn is_retryable_status(status: reqwest::StatusCode) -> bool {
 }
 
 fn normalize_finish_reason(value: &str) -> String {
+    if is_malformed_function_call_reason(value) {
+        return "end_turn".to_string();
+    }
     match value {
         "stop" => "end_turn",
         "tool_calls" => "tool_use",
         other => other,
     }
     .to_string()
+}
+
+fn is_malformed_function_call_reason(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    lowered.contains("malformed_function_call")
 }
 
 trait StringExt {
@@ -1624,6 +1724,48 @@ mod tests {
     fn normalizes_stop_reasons() {
         assert_eq!(normalize_finish_reason("stop"), "end_turn");
         assert_eq!(normalize_finish_reason("tool_calls"), "tool_use");
+        assert_eq!(
+            normalize_finish_reason("MALFORMED_FUNCTION_CALL"),
+            "end_turn",
+            "malformed function call should normalize to end_turn"
+        );
+    }
+
+    #[test]
+    fn malformed_function_call_response_discards_tool_calls() {
+        use super::{normalize_response, ChatCompletionResponse, ChatChoice, ChatMessage, ResponseToolCall, OpenAiUsage};
+
+        let response = ChatCompletionResponse {
+            id: "resp_1".to_string(),
+            model: "gemini-2.5-flash".to_string(),
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some("I tried to call a function but it was malformed.".to_string()),
+                    tool_calls: vec![ResponseToolCall {
+                        id: None,
+                        function: None,
+                    }],
+                },
+                finish_reason: Some("MALFORMED_FUNCTION_CALL".to_string()),
+            }],
+            usage: Some(OpenAiUsage {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+            }),
+        };
+        let result = normalize_response("gemini-2.5-flash", response)
+            .expect("malformed function call must not crash");
+        assert_eq!(result.content.len(), 1, "only text block should remain");
+        assert!(
+            matches!(&result.content[0], super::super::super::types::OutputContentBlock::Text { .. }),
+            "remaining block should be text"
+        );
+        assert_eq!(
+            result.stop_reason.as_deref(),
+            Some("end_turn"),
+            "stop_reason should be end_turn for malformed function call"
+        );
     }
 
     #[test]
@@ -1888,6 +2030,55 @@ mod tests {
         ];
         let out = sanitize_tool_message_pairing(two_results);
         assert_eq!(out.len(), 3, "both valid tool results must be preserved");
+    }
+
+    #[test]
+    fn detects_vllm_auto_tool_choice_error_marker() {
+        let error = ApiError::Api {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            error_type: Some("BadRequestError".to_string()),
+            message: Some(
+                "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set"
+                    .to_string(),
+            ),
+            request_id: None,
+            body: String::new(),
+            retryable: false,
+        };
+        assert!(super::is_auto_tool_choice_unsupported_error(&error));
+    }
+
+    #[test]
+    fn retry_without_tools_only_applies_when_tools_were_requested() {
+        let error = ApiError::Api {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            error_type: Some("BadRequestError".to_string()),
+            message: Some(
+                "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set"
+                    .to_string(),
+            ),
+            request_id: None,
+            body: String::new(),
+            retryable: false,
+        };
+        let no_tools_request = MessageRequest {
+            model: "Qwen/Qwen2.5-VL-72B-Instruct-AWQ".to_string(),
+            max_tokens: 64,
+            messages: vec![InputMessage::user_text("hello")],
+            ..Default::default()
+        };
+        assert!(!super::should_retry_without_tools(&error, &no_tools_request));
+
+        let with_tools_request = MessageRequest {
+            tools: Some(vec![ToolDefinition {
+                name: "echo".to_string(),
+                description: Some("Echo input".to_string()),
+                input_schema: json!({"type": "object"}),
+            }]),
+            tool_choice: Some(ToolChoice::Auto),
+            ..no_tools_request
+        };
+        assert!(super::should_retry_without_tools(&error, &with_tools_request));
     }
 
     #[test]

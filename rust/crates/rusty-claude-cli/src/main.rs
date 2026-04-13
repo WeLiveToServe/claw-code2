@@ -1209,6 +1209,19 @@ fn resolve_cli_model_with_runtime_config(
     if let Some(env_model) = configured_model_override() {
         return resolve_model_alias_with_config(&env_model);
     }
+    if explicit_backend.is_some() {
+        if let Ok(resolved_backend) =
+            api::resolve_backend(DEFAULT_MODEL, runtime_config, explicit_backend)
+        {
+            if let Some(default_model) = resolved_backend
+                .default_model
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                return resolve_model_alias_with_config(default_model);
+            }
+        }
+    }
     if let Some(config_model) = runtime_config
         .and_then(runtime::RuntimeConfig::model)
         .filter(|value| !value.trim().is_empty())
@@ -1288,8 +1301,10 @@ fn apply_runtime_env_overrides_for_current_dir() {
 }
 
 fn format_connected_line(model: &str) -> String {
-    let provider = resolved_metadata_for_model(model).provider_label;
-    format!("Connected: {model} via {provider}")
+    let meta = resolved_metadata_for_model(model);
+    let provider = meta.provider_label;
+    let auth_env = meta.auth_env;
+    format!("Connected: {model} via {provider} ({auth_env})")
 }
 
 fn format_connected_line_with_backend(
@@ -1297,10 +1312,19 @@ fn format_connected_line_with_backend(
     explicit_backend: Option<&str>,
     runtime_config: Option<&runtime::RuntimeConfig>,
 ) -> String {
-    let provider = api::resolve_backend(model, runtime_config, explicit_backend)
-        .map(|backend| backend.provider_label)
-        .unwrap_or_else(|_| resolved_metadata_for_model(model).provider_label.to_string());
-    format!("Connected: {model} via {provider}")
+    let (provider, auth_env) = api::resolve_backend(model, runtime_config, explicit_backend)
+        .map(|backend| {
+            let auth = backend
+                .auth_env
+                .clone()
+                .unwrap_or_else(|| resolved_metadata_for_model(model).auth_env.to_string());
+            (backend.provider_label, auth)
+        })
+        .unwrap_or_else(|_| {
+            let meta = resolved_metadata_for_model(model);
+            (meta.provider_label.to_string(), meta.auth_env.to_string())
+        });
+    format!("Connected: {model} via {provider} ({auth_env})")
 }
 
 fn filter_tool_specs(
@@ -4177,6 +4201,7 @@ impl LiveCli {
 ╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\
   \x1b[2mModel\x1b[0m            {}\n\
+  \x1b[2mAuth\x1b[0m             {}\n\
   \x1b[2mPermissions\x1b[0m      {}\n\
   \x1b[2mBranch\x1b[0m           {}\n\
   \x1b[2mWorkspace\x1b[0m        {}\n\
@@ -4185,6 +4210,7 @@ impl LiveCli {
   \x1b[2mAuto-save\x1b[0m        {}\n\n\
   Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
+            resolved_metadata_for_model(&self.model).auth_env,
             self.permission_mode.as_str(),
             git_branch,
             workspace,
@@ -7306,6 +7332,7 @@ struct AnthropicRuntimeClient {
     tool_registry: GlobalToolRegistry,
     progress_reporter: Option<InternalPromptProgressReporter>,
     reasoning_effort: Option<String>,
+    max_output_tokens: Option<u32>,
 }
 
 impl AnthropicRuntimeClient {
@@ -7321,6 +7348,9 @@ impl AnthropicRuntimeClient {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let resolved_model = api::resolve_model_alias(&model);
         let runtime_config = runtime_config_for_current_dir();
+        let max_output_tokens = runtime_config
+            .as_ref()
+            .and_then(|config| config.plugins().max_output_tokens());
         let resolved_backend =
             api::resolve_backend(&resolved_model, runtime_config.as_ref(), backend.as_deref())?;
         let uses_default_anthropic_auth = resolved_backend.provider == ProviderKind::Anthropic
@@ -7354,6 +7384,7 @@ impl AnthropicRuntimeClient {
             tool_registry,
             progress_reporter,
             reasoning_effort: None,
+            max_output_tokens,
         })
     }
 
@@ -7397,7 +7428,9 @@ impl ApiClient for AnthropicRuntimeClient {
         let is_post_tool = request_ends_with_tool_result(&request);
         let message_request = MessageRequest {
             model: self.model.clone(),
-            max_tokens: max_tokens_for_model(&self.model),
+            max_tokens: self
+                .max_output_tokens
+                .unwrap_or_else(|| max_tokens_for_model(&self.model)),
             messages: convert_messages(&request.messages),
             system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
             tools: self
