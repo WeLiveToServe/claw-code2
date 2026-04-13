@@ -10,7 +10,8 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{
-    Cmd, CompletionType, Config, Context, EditMode, Editor, Helper, KeyCode, KeyEvent, Modifiers,
+    Cmd, CompletionType, Config, Context, ConditionalEventHandler, EditMode, Editor, Event,
+    EventContext, EventHandler, Helper, KeyCode, KeyEvent, Modifiers, RepeatCount,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,22 @@ impl Completer for SlashCommandHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        // Empty line: show base slash commands (triggered by "/" key auto-complete).
+        // Filter to commands without spaces to avoid showing argument variants
+        // like "/config env" — those appear after the user types "/config ".
+        if line.is_empty() && pos == 0 {
+            let matches = self
+                .completions
+                .iter()
+                .filter(|candidate| !candidate.contains(' '))
+                .map(|candidate| Pair {
+                    display: candidate.clone(),
+                    replacement: candidate.clone(),
+                })
+                .collect();
+            return Ok((0, matches));
+        }
+
         let Some(prefix) = slash_command_prefix(line, pos) else {
             return Ok((0, Vec::new()));
         };
@@ -98,6 +115,24 @@ impl Highlighter for SlashCommandHelper {
 impl Validator for SlashCommandHelper {}
 impl Helper for SlashCommandHelper {}
 
+struct SlashAutoComplete;
+
+impl ConditionalEventHandler for SlashAutoComplete {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        ctx: &EventContext<'_>,
+    ) -> Option<Cmd> {
+        if ctx.line().is_empty() && ctx.pos() == 0 {
+            Some(Cmd::Complete)
+        } else {
+            None
+        }
+    }
+}
+
 pub struct LineEditor {
     prompt: String,
     editor: Editor<SlashCommandHelper, DefaultHistory>,
@@ -108,6 +143,7 @@ impl LineEditor {
     pub fn new(prompt: impl Into<String>, completions: Vec<String>) -> Self {
         let config = Config::builder()
             .completion_type(CompletionType::List)
+            .completion_prompt_limit(200)
             .edit_mode(EditMode::Emacs)
             .build();
         let mut editor = Editor::<SlashCommandHelper, DefaultHistory>::with_config(config)
@@ -115,6 +151,10 @@ impl LineEditor {
         editor.set_helper(Some(SlashCommandHelper::new(completions)));
         editor.bind_sequence(KeyEvent(KeyCode::Char('J'), Modifiers::CTRL), Cmd::Newline);
         editor.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::SHIFT), Cmd::Newline);
+        editor.bind_sequence(
+            KeyEvent(KeyCode::Char('/'), Modifiers::NONE),
+            EventHandler::Conditional(Box::new(SlashAutoComplete)),
+        );
 
         Self {
             prompt: prompt.into(),
@@ -283,6 +323,39 @@ mod tests {
                 .map(|candidate| candidate.replacement)
                 .collect::<Vec<_>>(),
             vec!["/model opus".to_string()]
+        );
+    }
+
+    #[test]
+    fn completes_base_commands_on_empty_line() {
+        let helper = SlashCommandHelper::new(vec![
+            "/config".to_string(),
+            "/config env".to_string(),
+            "/help".to_string(),
+            "/tools".to_string(),
+        ]);
+        let history = DefaultHistory::new();
+        let ctx = Context::new(&history);
+        let (start, matches) = helper
+            .complete("", 0, &ctx)
+            .expect("completion should work");
+
+        assert_eq!(start, 0);
+        let replacements: Vec<_> = matches
+            .into_iter()
+            .map(|candidate| candidate.replacement)
+            .collect();
+        assert_eq!(
+            replacements,
+            vec![
+                "/config".to_string(),
+                "/help".to_string(),
+                "/tools".to_string()
+            ]
+        );
+        assert!(
+            !replacements.contains(&"/config env".to_string()),
+            "argument variants should be filtered out"
         );
     }
 

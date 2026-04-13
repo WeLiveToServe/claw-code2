@@ -10,3 +10,6 @@ archive/
 rust/.claw/settings.local.json
 rust/.claw/sessions/
 rust/.claw/plugins/
+
+# Debug system prompt dumps
+system-prompt.*.txt
