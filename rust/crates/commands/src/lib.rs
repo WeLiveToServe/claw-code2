@@ -65,6 +65,20 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "slash",
+        aliases: &[],
+        summary: "List all slash commands",
+        argument_hint: None,
+        resume_supported: true,
+    },
+    SlashCommandSpec {
+        name: "tools",
+        aliases: &[],
+        summary: "List all tools available to the agent",
+        argument_hint: None,
+        resume_supported: true,
+    },
+    SlashCommandSpec {
         name: "status",
         aliases: &[],
         summary: "Show current session status",
@@ -1053,6 +1067,8 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
+    Slash,
+    Tools,
     Status,
     Sandbox,
     Compact,
@@ -1325,6 +1341,14 @@ pub fn validate_slash_command_input(
         "help" => {
             validate_no_args(command, &args)?;
             SlashCommand::Help
+        }
+        "slash" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::Slash
+        }
+        "tools" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::Tools
         }
         "status" => {
             validate_no_args(command, &args)?;
@@ -2088,6 +2112,47 @@ pub fn render_slash_command_help() -> String {
         .rev()
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+pub fn render_slash_command_list() -> String {
+    let mut lines = vec!["Slash Commands".to_string(), String::new()];
+    for spec in slash_command_specs() {
+        let hint = spec
+            .argument_hint
+            .map(|h| format!(" {h}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "  /{:<24} {}",
+            format!("{}{hint}", spec.name),
+            spec.summary
+        ));
+    }
+    lines.join("\n")
+}
+
+pub fn render_tools_list() -> String {
+    let tools: &[(&str, &str)] = &[
+        ("bash", "Execute shell commands (PowerShell on Windows)"),
+        ("read_file", "Read a text file from the workspace"),
+        ("write_file", "Write a text file in the workspace"),
+        ("edit_file", "Replace text in a workspace file"),
+        ("glob_search", "Find files by glob pattern"),
+        ("grep_search", "Search file contents with regex"),
+        ("WebFetch", "Fetch a URL and answer a prompt about it"),
+        ("WebSearch", "Search the web for current information"),
+        ("TodoWrite", "Update structured task list"),
+        ("Skill", "Load a local skill definition"),
+        ("Agent", "Launch a sub-agent task"),
+        ("ToolSearch", "Search for specialized tools"),
+        ("NotebookEdit", "Edit Jupyter notebook cells"),
+        ("Sleep", "Wait without holding a process"),
+        ("SendUserMessage", "Send a message to the user"),
+    ];
+    let mut lines = vec!["Agent Tools".to_string(), String::new()];
+    for (name, desc) in tools {
+        lines.push(format!("  {:<20} {desc}", name));
+    }
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4018,6 +4083,14 @@ pub fn handle_slash_command(
         }
         SlashCommand::Help => Some(SlashCommandResult {
             message: render_slash_command_help(),
+            session: session.clone(),
+        }),
+        SlashCommand::Slash => Some(SlashCommandResult {
+            message: render_slash_command_list(),
+            session: session.clone(),
+        }),
+        SlashCommand::Tools => Some(SlashCommandResult {
+            message: render_tools_list(),
             session: session.clone(),
         }),
         SlashCommand::Status

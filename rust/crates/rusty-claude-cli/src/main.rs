@@ -3199,6 +3199,16 @@ fn run_resume_command(
             message: Some(render_repl_help()),
             json: Some(serde_json::json!({ "kind": "help", "text": render_repl_help() })),
         }),
+        SlashCommand::Slash => Ok(ResumeCommandOutcome {
+            session: session.clone(),
+            message: Some(commands::render_slash_command_list()),
+            json: Some(serde_json::json!({ "kind": "slash", "text": commands::render_slash_command_list() })),
+        }),
+        SlashCommand::Tools => Ok(ResumeCommandOutcome {
+            session: session.clone(),
+            message: Some(commands::render_tools_list()),
+            json: Some(serde_json::json!({ "kind": "tools", "text": commands::render_tools_list() })),
+        }),
         SlashCommand::Compact => {
             let result = runtime::compact_session(
                 session,
@@ -4277,7 +4287,8 @@ impl LiveCli {
   \x1b[2mDirectory\x1b[0m        {}\n\
   \x1b[2mSession\x1b[0m          {}\n\
   \x1b[2mAuto-save\x1b[0m        {}\n\n\
-  Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
+  Type \x1b[1m/slash\x1b[0m for slash commands\n\
+  Type \x1b[1m/tools\x1b[0m for tools",
             self.model,
             api_connection,
             auth_env,
@@ -4444,6 +4455,14 @@ impl LiveCli {
         Ok(match command {
             SlashCommand::Help => {
                 println!("{}", render_repl_help());
+                false
+            }
+            SlashCommand::Slash => {
+                println!("{}", commands::render_slash_command_list());
+                false
+            }
+            SlashCommand::Tools => {
+                println!("{}", commands::render_tools_list());
                 false
             }
             SlashCommand::Status => {
