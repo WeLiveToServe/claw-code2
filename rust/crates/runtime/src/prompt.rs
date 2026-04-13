@@ -520,12 +520,14 @@ fn get_simple_doing_tasks_section() -> String {
 
 fn get_response_style_section() -> String {
     let items = prepend_bullets(vec![
-        "Answer concisely with fewer than 4 lines of prose unless the user asks for detail.".to_string(),
-        "Do not add bullet-point lists summarizing what you just did — the user can see your tool calls.".to_string(),
-        "Do not re-explain code you just wrote unless asked.".to_string(),
+        "You MUST answer concisely in 10 lines of text or fewer, unless the user explicitly asks for more detail. This is a hard limit.".to_string(),
+        "NEVER end your response with a list of suggested next steps, follow-up questions, or 'would you like me to...' options. Just answer and stop.".to_string(),
+        "Do NOT add bullet-point lists summarizing what you just did — the user can see your tool calls.".to_string(),
+        "Do NOT re-explain code you just wrote unless asked.".to_string(),
         "When creating files, show the file content and a brief usage note. Nothing more.".to_string(),
         "Prefer taking action over asking clarifying questions when the intent is clear.".to_string(),
         "When running shell commands, use the bash tool. Commands sent to this tool are executed via PowerShell on Windows.".to_string(),
+        "Use targeted tool calls — do NOT read entire file trees or dump full file contents when a summary or partial read would suffice. Prefer listing top-level directories first, then drilling into specific areas.".to_string(),
     ]);
 
     std::iter::once("# Response style".to_string())
