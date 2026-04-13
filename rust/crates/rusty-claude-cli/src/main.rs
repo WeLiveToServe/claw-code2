@@ -4366,6 +4366,9 @@ impl LiveCli {
         match result {
             Ok(summary) => {
                 self.replace_runtime(runtime)?;
+                // Ensure the cursor is on a fresh line so spinner.finish()
+                // does not overwrite the last line of streamed output.
+                writeln!(stdout)?;
                 spinner.finish(
                     "✨ Done",
                     TerminalRenderer::new().color_theme(),
