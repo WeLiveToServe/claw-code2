@@ -3619,7 +3619,6 @@ fn run_repl(
     let mut editor =
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
-    println!("{}", format_connected_line_with_backend(&cli.model, backend.as_deref(), runtime_config_for_current_dir().as_ref()));
     println!("\n");
 
     loop {
@@ -4257,6 +4256,10 @@ impl LiveCli {
                     .and_then(|b| b.api_key_env.clone())
             })
             .unwrap_or_else(|| resolved_metadata_for_model(&self.model).auth_env.to_string());
+        let api_connection = {
+            let rc = runtime_config_for_current_dir();
+            format_connected_line_with_backend(&self.model, self.backend.as_deref(), rc.as_ref())
+        };
         format!(
             "\n\n\x1b[38;5;196m\
  ██████╗██╗      █████╗ ██╗    ██╗\n\
@@ -4266,6 +4269,7 @@ impl LiveCli {
 ╚██████╗███████╗██║  ██║╚███╔███╔╝\n\
  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\x1b[0m \x1b[38;5;208mCode\x1b[0m 🦞\n\n\n\
   \x1b[2mModel\x1b[0m            {}\n\
+  \x1b[2mAPI\x1b[0m              {}\n\
   \x1b[2mAuth\x1b[0m             {}\n\
   \x1b[2mPermissions\x1b[0m      {}\n\
   \x1b[2mBranch\x1b[0m           {}\n\
@@ -4275,6 +4279,7 @@ impl LiveCli {
   \x1b[2mAuto-save\x1b[0m        {}\n\n\
   Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
+            api_connection,
             auth_env,
             self.permission_mode.as_str(),
             git_branch,
