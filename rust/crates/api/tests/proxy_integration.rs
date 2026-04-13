@@ -35,6 +35,7 @@ impl Drop for EnvVarGuard {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn proxy_config_from_env_reads_uppercase_proxy_vars() {
     // given
@@ -60,6 +61,7 @@ fn proxy_config_from_env_reads_uppercase_proxy_vars() {
     assert!(!config.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn proxy_config_from_env_reads_lowercase_proxy_vars() {
     // given
@@ -123,6 +125,7 @@ fn proxy_config_from_env_treats_empty_values_as_unset() {
     assert!(config.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn build_client_with_env_proxy_config_succeeds() {
     // given
@@ -154,6 +157,7 @@ fn build_client_with_proxy_url_config_succeeds() {
     assert!(result.is_ok());
 }
 
+#[cfg(unix)]
 #[test]
 fn proxy_config_from_env_prefers_uppercase_over_lowercase() {
     // given

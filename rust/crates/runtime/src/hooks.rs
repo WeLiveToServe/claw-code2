@@ -633,7 +633,7 @@ fn format_hook_failure(command: &str, code: i32, stdout: Option<&str>, stderr: &
 
 fn shell_command(command: &str) -> CommandWithStdin {
     #[cfg(windows)]
-    let mut command_builder = {
+    let command_builder = {
         let mut command_builder = Command::new("cmd");
         command_builder.arg("/C").arg(command);
         CommandWithStdin::new(command_builder)
@@ -713,6 +713,7 @@ enum CommandExecution {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::thread;
     use std::time::Duration;

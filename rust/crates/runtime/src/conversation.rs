@@ -797,6 +797,7 @@ mod tests {
         StaticToolExecutor, ToolExecutor, DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
     };
     use crate::compact::CompactionConfig;
+    #[cfg(unix)]
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
     use crate::permissions::{
         PermissionMode, PermissionPolicy, PermissionPromptDecision, PermissionPrompter,
@@ -805,6 +806,7 @@ mod tests {
     use crate::prompt::{ProjectContext, SystemPromptBuilder};
     use crate::session::{ContentBlock, MessageRole, Session};
     use crate::usage::TokenUsage;
+    #[cfg(unix)]
     use crate::ToolError;
     use std::fs;
     use std::path::PathBuf;
@@ -1022,6 +1024,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn denies_tool_use_when_pre_tool_hook_blocks() {
         struct SingleCallApiClient;
@@ -1084,6 +1087,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn denies_tool_use_when_pre_tool_hook_fails() {
         struct SingleCallApiClient;
@@ -1149,6 +1153,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn appends_post_tool_hook_feedback_to_tool_result() {
         struct TwoCallApiClient {
@@ -1224,6 +1229,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn appends_post_tool_use_failure_hook_feedback_to_tool_result() {
         struct TwoCallApiClient {
@@ -1462,12 +1468,7 @@ mod tests {
         std::env::temp_dir().join(format!("runtime-conversation-{label}-{nanos}.json"))
     }
 
-    #[cfg(windows)]
-    fn shell_snippet(script: &str) -> String {
-        script.replace('\'', "\"")
-    }
-
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     fn shell_snippet(script: &str) -> String {
         script.to_string()
     }

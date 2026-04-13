@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::path::Path;
 use std::process::Command;
 
 use serde_json::json;
@@ -366,12 +365,20 @@ impl CommandWithStdin {
 
 #[cfg(test)]
 mod tests {
-    use super::{HookRunResult, HookRunner};
+    use super::HookRunner;
+
+    #[cfg(unix)]
+    use super::HookRunResult;
+    #[cfg(unix)]
     use crate::{PluginManager, PluginManagerConfig};
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(unix)]
     fn temp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -380,18 +387,15 @@ mod tests {
         std::env::temp_dir().join(format!("plugins-hook-runner-{label}-{nanos}"))
     }
 
+    #[cfg(unix)]
     fn make_executable(path: &Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o755);
-            fs::set_permissions(path, perms)
-                .unwrap_or_else(|e| panic!("chmod +x {}: {e}", path.display()));
-        }
-        #[cfg(not(unix))]
-        let _ = path;
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(path, perms)
+            .unwrap_or_else(|e| panic!("chmod +x {}: {e}", path.display()));
     }
 
+    #[cfg(unix)]
     fn write_hook_plugin(
         root: &Path,
         name: &str,
@@ -434,6 +438,7 @@ mod tests {
         .expect("write plugin manifest");
     }
 
+    #[cfg(unix)]
     #[test]
     fn collects_and_runs_hooks_from_enabled_plugins() {
         // given
@@ -495,6 +500,7 @@ mod tests {
         let _ = fs::remove_dir_all(second_source_root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn pre_tool_use_denies_when_plugin_hook_exits_two() {
         // given
