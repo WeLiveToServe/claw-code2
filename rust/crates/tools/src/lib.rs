@@ -1285,26 +1285,30 @@ fn maybe_enforce_permission_check(
 fn run_ask_user_question(input: AskUserQuestionInput) -> Result<String, String> {
     use std::io::{self, BufRead, Write};
 
-    // Display the question to the user via stdout
-    let stdout = io::stdout();
-    let stdin = io::stdin();
-    let mut out = stdout.lock();
+    // Display the question to the user via stdout.
+    // Scope the stdout lock so it is dropped before we read stdin —
+    // on Windows, holding both locks simultaneously can prevent the
+    // console from accepting input.
+    {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
 
-    writeln!(out, "\n[Question] {}", input.question).map_err(|e| e.to_string())?;
+        writeln!(out, "\n[Question] {}", input.question).map_err(|e| e.to_string())?;
 
-    if let Some(ref options) = input.options {
-        for (i, option) in options.iter().enumerate() {
-            writeln!(out, "  {}. {}", i + 1, option).map_err(|e| e.to_string())?;
+        if let Some(ref options) = input.options {
+            for (i, option) in options.iter().enumerate() {
+                writeln!(out, "  {}. {}", i + 1, option).map_err(|e| e.to_string())?;
+            }
+            write!(out, "Enter choice (1-{}): ", options.len()).map_err(|e| e.to_string())?;
+        } else {
+            write!(out, "Your answer: ").map_err(|e| e.to_string())?;
         }
-        write!(out, "Enter choice (1-{}): ", options.len()).map_err(|e| e.to_string())?;
-    } else {
-        write!(out, "Your answer: ").map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())?;
     }
-    out.flush().map_err(|e| e.to_string())?;
 
     // Read user response from stdin
     let mut response = String::new();
-    stdin
+    io::stdin()
         .lock()
         .read_line(&mut response)
         .map_err(|e| e.to_string())?;
