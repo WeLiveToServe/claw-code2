@@ -5383,7 +5383,6 @@ fn parse_skill_description(contents: &str) -> Option<String> {
     None
 }
 
-pub mod lane_completion;
 pub mod pdf_extract;
 
 #[cfg(test)]
@@ -8371,6 +8370,7 @@ printf 'pwsh:%s' "$1"
             "claude-sonnet-4-6".to_string(),
             BTreeSet::new(),
             &fallback_config,
+            None,
         )
         .expect("primary-only chain should construct");
 
@@ -8404,6 +8404,7 @@ printf 'pwsh:%s' "$1"
             "claude-sonnet-4-6".to_string(),
             BTreeSet::new(),
             &fallback_config,
+            None,
         )
         .expect("chain with fallbacks should construct");
 
@@ -8443,6 +8444,7 @@ printf 'pwsh:%s' "$1"
             "claude-haiku-4-5-20251213".to_string(),
             BTreeSet::new(),
             &fallback_config,
+            None,
         )
         .expect("chain with primary override should construct");
 
@@ -8484,6 +8486,7 @@ printf 'pwsh:%s' "$1"
             "claude-sonnet-4-6".to_string(),
             BTreeSet::new(),
             &fallback_config,
+            None,
         )
         .expect("chain construction should not fail when only some fallbacks are unavailable");
 
