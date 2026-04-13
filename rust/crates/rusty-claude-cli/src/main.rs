@@ -10743,6 +10743,7 @@ mod tests {
         let _guard = env_lock();
         // Inject dummy credentials so LiveCli can construct without real Anthropic key
         std::env::set_var("ANTHROPIC_API_KEY", "test-dummy-key-for-banner-test");
+        std::env::set_var("GEMINI_API_KEY", "test-gemini-key");
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
 
@@ -10758,11 +10759,12 @@ mod tests {
             .startup_banner()
         });
 
-        assert!(banner.contains("Tab"));
-        assert!(banner.contains("workflow completions"));
+        assert!(banner.contains("/slash"));
+        assert!(banner.contains("/tools"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
         std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("GEMINI_API_KEY");
     }
 
     #[test]
@@ -10771,7 +10773,7 @@ mod tests {
 
         let line = format_connected_line(model);
 
-        assert_eq!(line, "Connected: claude-sonnet-4-6 via anthropic");
+        assert_eq!(line, "Connected: claude-sonnet-4-6 via anthropic (ANTHROPIC_API_KEY)");
     }
 
     #[test]
@@ -10780,7 +10782,7 @@ mod tests {
 
         let line = format_connected_line(model);
 
-        assert_eq!(line, "Connected: grok-3 via xai");
+        assert_eq!(line, "Connected: grok-3 via xai (XAI_API_KEY)");
     }
 
     #[test]
@@ -10789,7 +10791,7 @@ mod tests {
 
         let line = format_connected_line(model);
 
-        assert_eq!(line, "Connected: gemini-2.5-flash via openai-compatible");
+        assert_eq!(line, "Connected: gemini-2.5-flash via openai-compatible (OPENAI_API_KEY)");
     }
 
     #[test]
@@ -10798,7 +10800,7 @@ mod tests {
 
         let line = format_connected_line(model);
 
-        assert_eq!(line, "Connected: qwen-plus via dashscope");
+        assert_eq!(line, "Connected: qwen-plus via dashscope (DASHSCOPE_API_KEY)");
     }
 
     #[test]
@@ -12605,6 +12607,7 @@ UU conflicted.rs",
         // Inject a dummy API key so runtime construction succeeds without real credentials.
         // This test only exercises plugin lifecycle (init/shutdown), never calls the API.
         std::env::set_var("ANTHROPIC_API_KEY", "test-dummy-key-for-plugin-lifecycle");
+        std::env::set_var("GEMINI_API_KEY", "test-gemini-key");
         let workspace = temp_dir();
         let source_root = temp_dir();
         fs::create_dir_all(&config_home).expect("config home");
@@ -12655,6 +12658,7 @@ UU conflicted.rs",
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(source_root);
         std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("GEMINI_API_KEY");
     }
 
     #[test]

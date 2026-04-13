@@ -34,7 +34,7 @@ async fn send_message_uses_openai_compatible_endpoint_and_auth() {
     )
     .await;
 
-    let client = OpenAiCompatClient::new("xai-test-key", OpenAiCompatConfig::xai())
+    let client = OpenAiCompatClient::new(Some("xai-test-key".to_string()), OpenAiCompatConfig::xai())
         .with_base_url(server.base_url());
     let response = client
         .send_message(&sample_request(false))
@@ -72,7 +72,7 @@ async fn send_message_blocks_oversized_xai_requests_before_the_http_call() {
     )
     .await;
 
-    let client = OpenAiCompatClient::new("xai-test-key", OpenAiCompatConfig::xai())
+    let client = OpenAiCompatClient::new(Some("xai-test-key".to_string()), OpenAiCompatConfig::xai())
         .with_base_url(server.base_url());
     let error = client
         .send_message(&MessageRequest {
@@ -121,7 +121,7 @@ async fn send_message_accepts_full_chat_completions_endpoint_override() {
     .await;
 
     let endpoint_url = format!("{}/chat/completions", server.base_url());
-    let client = OpenAiCompatClient::new("xai-test-key", OpenAiCompatConfig::xai())
+    let client = OpenAiCompatClient::new(Some("xai-test-key".to_string()), OpenAiCompatConfig::xai())
         .with_base_url(endpoint_url);
     let response = client
         .send_message(&sample_request(false))
@@ -155,7 +155,7 @@ async fn stream_message_normalizes_text_and_multiple_tool_calls() {
     )
     .await;
 
-    let client = OpenAiCompatClient::new("xai-test-key", OpenAiCompatConfig::xai())
+    let client = OpenAiCompatClient::new(Some("xai-test-key".to_string()), OpenAiCompatConfig::xai())
         .with_base_url(server.base_url());
     let mut stream = client
         .stream_message(&sample_request(false))
@@ -254,7 +254,7 @@ async fn openai_streaming_requests_opt_into_usage_chunks() {
     )
     .await;
 
-    let client = OpenAiCompatClient::new("openai-test-key", OpenAiCompatConfig::openai())
+    let client = OpenAiCompatClient::new(Some("openai-test-key".to_string()), OpenAiCompatConfig::openai())
         .with_base_url(server.base_url());
     let mut stream = client
         .stream_message(&sample_request(false))
