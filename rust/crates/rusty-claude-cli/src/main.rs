@@ -3577,6 +3577,7 @@ fn run_repl(
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
     println!("{}", format_connected_line_with_backend(&cli.model, backend.as_deref(), None));
+    println!("\n\n\n");
 
     loop {
         editor.set_completions(cli.repl_completion_candidates().unwrap_or_default());
@@ -4205,8 +4206,16 @@ impl LiveCli {
             |_| self.session.path.display().to_string(),
             |path| path.display().to_string(),
         );
+        let auth_env = runtime_config_for_current_dir()
+            .and_then(|config| {
+                let backend_id = self.backend.as_deref()
+                    .or_else(|| config.backend())?;
+                config.backends().get(backend_id)
+                    .and_then(|b| b.api_key_env.clone())
+            })
+            .unwrap_or_else(|| resolved_metadata_for_model(&self.model).auth_env.to_string());
         format!(
-            "\x1b[38;5;196m\
+            "\n\n\n\n\x1b[38;5;196m\
  ██████╗██╗      █████╗ ██╗    ██╗\n\
 ██╔════╝██║     ██╔══██╗██║    ██║\n\
 ██║     ██║     ███████║██║ █╗ ██║\n\
@@ -4223,7 +4232,7 @@ impl LiveCli {
   \x1b[2mAuto-save\x1b[0m        {}\n\n\
   Type \x1b[1m/help\x1b[0m for commands · \x1b[1m/status\x1b[0m for live context · \x1b[2m/resume latest\x1b[0m jumps back to the newest session · \x1b[1m/diff\x1b[0m then \x1b[1m/commit\x1b[0m to ship · \x1b[2mTab\x1b[0m for workflow completions · \x1b[2mShift+Enter\x1b[0m for newline",
             self.model,
-            resolved_metadata_for_model(&self.model).auth_env,
+            auth_env,
             self.permission_mode.as_str(),
             git_branch,
             workspace,
