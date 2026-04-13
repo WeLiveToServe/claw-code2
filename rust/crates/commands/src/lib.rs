@@ -67,14 +67,28 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "slash",
         aliases: &[],
-        summary: "List all slash commands",
+        summary: "Show popular slash commands",
+        argument_hint: None,
+        resume_supported: true,
+    },
+    SlashCommandSpec {
+        name: "slash-all-cmds",
+        aliases: &[],
+        summary: "List ALL slash commands",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "tools",
         aliases: &[],
-        summary: "List all tools available to the agent",
+        summary: "Show popular agent tools",
+        argument_hint: None,
+        resume_supported: true,
+    },
+    SlashCommandSpec {
+        name: "tools-all",
+        aliases: &[],
+        summary: "List ALL agent tools",
         argument_hint: None,
         resume_supported: true,
     },
@@ -1067,8 +1081,10 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
-    Slash,
-    Tools,
+    SlashPopular,
+    SlashAllCmds,
+    ToolsPopular,
+    ToolsAll,
     Status,
     Sandbox,
     Compact,
@@ -1344,11 +1360,19 @@ pub fn validate_slash_command_input(
         }
         "slash" => {
             validate_no_args(command, &args)?;
-            SlashCommand::Slash
+            SlashCommand::SlashPopular
+        }
+        "slash-all-cmds" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::SlashAllCmds
         }
         "tools" => {
             validate_no_args(command, &args)?;
-            SlashCommand::Tools
+            SlashCommand::ToolsPopular
+        }
+        "tools-all" => {
+            validate_no_args(command, &args)?;
+            SlashCommand::ToolsAll
         }
         "status" => {
             validate_no_args(command, &args)?;
@@ -1917,7 +1941,8 @@ pub fn resume_supported_slash_commands() -> Vec<&'static SlashCommandSpec> {
 
 fn slash_command_category(name: &str) -> &'static str {
     match name {
-        "help" | "status" | "cost" | "resume" | "session" | "version" | "login" | "logout"
+        "help" | "slash" | "slash-all-cmds" | "tools" | "tools-all" | "status" | "cost"
+        | "resume" | "session" | "version" | "login" | "logout"
         | "usage" | "stats" | "rename" | "clear" | "compact" | "history" | "tokens" | "cache"
         | "exit" | "summary" | "tag" | "thinkback" | "copy" | "share" | "feedback" | "rewind"
         | "pin" | "unpin" | "bookmarks" | "context" | "files" | "focus" | "unfocus" | "retry"
@@ -2114,7 +2139,25 @@ pub fn render_slash_command_help() -> String {
         .join("\n")
 }
 
-pub fn render_slash_command_list() -> String {
+pub fn render_popular_slash_commands() -> String {
+    let popular = [
+        ("/status", "Show current session status"),
+        ("/diff", "Show git diff for workspace changes"),
+        ("/commit", "Generate commit message and commit"),
+        ("/model [model]", "Show or switch the active model"),
+        ("/cost", "Show cumulative token usage"),
+        ("/doctor", "Diagnose setup issues"),
+        ("/slash-all-cmds", "List ALL slash commands"),
+        ("/tools", "List popular agent tools"),
+    ];
+    let mut lines = vec!["Popular Commands".to_string(), String::new()];
+    for (cmd, desc) in popular {
+        lines.push(format!("  {:<24} {}", cmd, desc));
+    }
+    lines.join("\n")
+}
+
+pub fn render_slash_all_commands() -> String {
     let mut lines = vec!["Slash Commands".to_string(), String::new()];
     for spec in slash_command_specs() {
         let hint = spec
@@ -2130,7 +2173,25 @@ pub fn render_slash_command_list() -> String {
     lines.join("\n")
 }
 
-pub fn render_tools_list() -> String {
+pub fn render_popular_tools() -> String {
+    let popular = [
+        ("bash", "Execute shell commands (PowerShell on Windows)"),
+        ("read_file", "Read a text file from the workspace"),
+        ("write_file", "Write a text file in the workspace"),
+        ("edit_file", "Replace text in a workspace file"),
+        ("grep_search", "Search file contents with regex"),
+        ("WebSearch", "Search the web for current information"),
+    ];
+    let mut lines = vec!["Popular Tools".to_string(), String::new()];
+    for (name, desc) in popular {
+        lines.push(format!("  {:<20} {}", name, desc));
+    }
+    lines.push(String::new());
+    lines.push("  Type /tools-all for the complete list.".to_string());
+    lines.join("\n")
+}
+
+pub fn render_all_tools() -> String {
     let tools: &[(&str, &str)] = &[
         ("bash", "Execute shell commands (PowerShell on Windows)"),
         ("read_file", "Read a text file from the workspace"),
@@ -4085,12 +4146,20 @@ pub fn handle_slash_command(
             message: render_slash_command_help(),
             session: session.clone(),
         }),
-        SlashCommand::Slash => Some(SlashCommandResult {
-            message: render_slash_command_list(),
+        SlashCommand::SlashPopular => Some(SlashCommandResult {
+            message: render_popular_slash_commands(),
             session: session.clone(),
         }),
-        SlashCommand::Tools => Some(SlashCommandResult {
-            message: render_tools_list(),
+        SlashCommand::SlashAllCmds => Some(SlashCommandResult {
+            message: render_slash_all_commands(),
+            session: session.clone(),
+        }),
+        SlashCommand::ToolsPopular => Some(SlashCommandResult {
+            message: render_popular_tools(),
+            session: session.clone(),
+        }),
+        SlashCommand::ToolsAll => Some(SlashCommandResult {
+            message: render_all_tools(),
             session: session.clone(),
         }),
         SlashCommand::Status

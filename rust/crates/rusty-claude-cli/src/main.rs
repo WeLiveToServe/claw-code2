@@ -3199,15 +3199,25 @@ fn run_resume_command(
             message: Some(render_repl_help()),
             json: Some(serde_json::json!({ "kind": "help", "text": render_repl_help() })),
         }),
-        SlashCommand::Slash => Ok(ResumeCommandOutcome {
+        SlashCommand::SlashPopular => Ok(ResumeCommandOutcome {
             session: session.clone(),
-            message: Some(commands::render_slash_command_list()),
-            json: Some(serde_json::json!({ "kind": "slash", "text": commands::render_slash_command_list() })),
+            message: Some(commands::render_popular_slash_commands()),
+            json: Some(serde_json::json!({ "kind": "slash", "text": commands::render_popular_slash_commands() })),
         }),
-        SlashCommand::Tools => Ok(ResumeCommandOutcome {
+        SlashCommand::SlashAllCmds => Ok(ResumeCommandOutcome {
             session: session.clone(),
-            message: Some(commands::render_tools_list()),
-            json: Some(serde_json::json!({ "kind": "tools", "text": commands::render_tools_list() })),
+            message: Some(commands::render_slash_all_commands()),
+            json: Some(serde_json::json!({ "kind": "slash-all-cmds", "text": commands::render_slash_all_commands() })),
+        }),
+        SlashCommand::ToolsPopular => Ok(ResumeCommandOutcome {
+            session: session.clone(),
+            message: Some(commands::render_popular_tools()),
+            json: Some(serde_json::json!({ "kind": "tools", "text": commands::render_popular_tools() })),
+        }),
+        SlashCommand::ToolsAll => Ok(ResumeCommandOutcome {
+            session: session.clone(),
+            message: Some(commands::render_all_tools()),
+            json: Some(serde_json::json!({ "kind": "tools-all", "text": commands::render_all_tools() })),
         }),
         SlashCommand::Compact => {
             let result = runtime::compact_session(
@@ -4457,12 +4467,20 @@ impl LiveCli {
                 println!("{}", render_repl_help());
                 false
             }
-            SlashCommand::Slash => {
-                println!("{}", commands::render_slash_command_list());
+            SlashCommand::SlashPopular => {
+                println!("{}", commands::render_popular_slash_commands());
                 false
             }
-            SlashCommand::Tools => {
-                println!("{}", commands::render_tools_list());
+            SlashCommand::SlashAllCmds => {
+                println!("{}", commands::render_slash_all_commands());
+                false
+            }
+            SlashCommand::ToolsPopular => {
+                println!("{}", commands::render_popular_tools());
+                false
+            }
+            SlashCommand::ToolsAll => {
+                println!("{}", commands::render_all_tools());
                 false
             }
             SlashCommand::Status => {
