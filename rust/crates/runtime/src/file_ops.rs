@@ -507,13 +507,23 @@ fn make_patch(original: &str, updated: &str) -> Vec<StructuredPatchHunk> {
     }]
 }
 
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        let path_str = path.to_string_lossy();
+        if path_str.starts_with(r"\\?\") {
+            return PathBuf::from(&path_str[4..]);
+        }
+    }
+    path
+}
+
 fn normalize_path(path: &str) -> io::Result<PathBuf> {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
         std::env::current_dir()?.join(path)
     };
-    candidate.canonicalize()
+    candidate.canonicalize().map(strip_verbatim)
 }
 
 fn normalize_path_allow_missing(path: &str) -> io::Result<PathBuf> {
@@ -524,12 +534,13 @@ fn normalize_path_allow_missing(path: &str) -> io::Result<PathBuf> {
     };
 
     if let Ok(canonical) = candidate.canonicalize() {
-        return Ok(canonical);
+        return Ok(strip_verbatim(canonical));
     }
 
     if let Some(parent) = candidate.parent() {
         let canonical_parent = parent
             .canonicalize()
+            .map(strip_verbatim)
             .unwrap_or_else(|_| parent.to_path_buf());
         if let Some(name) = candidate.file_name() {
             return Ok(canonical_parent.join(name));

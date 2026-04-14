@@ -30,11 +30,12 @@ The fork inherits that foundation, but it also inherits a bias: parts of the cod
 
 ## Work done so far
 
-Recent work in this fork has been aimed at making provider behavior less surprising and more operationally honest.
+Recent work in this fork has been aimed at making provider behavior less surprising, optimizing native Windows execution, and vastly improving the CLI UX.
 
-- Provider-routing fixes:
+- Provider-routing & Identity fixes:
   - explicit OpenAI-compatible model families are routed more reliably
   - Gemini-style model selection was tested through the OpenAI-compatible path
+  - tool and system prompt limits are correctly model-agnostic instead of hardcoded to `"Claude Opus 4.6"`
   - token-limit handling was improved for provider-prefixed OpenAI models
 
 - Explicit backend support:
@@ -42,30 +43,34 @@ Recent work in this fork has been aimed at making provider behavior less surpris
   - the CLI now supports `--backend`
   - `CLAW_BACKEND` can override backend selection from the environment
   - built-in backend presets now include `anthropic`, `openai`, `xai`, `dashscope`, and `openrouter`
-  - custom OpenAI-compatible backends can be defined in config for droplet/local/MaaS endpoints without code forks
+  - custom OpenAI-compatible backends can be defined for droplet/local/MaaS endpoints without code forks
+
+- Windows-Native Optimization & Compatibility:
+  - Addressed native Windows UNC pathing (`\\?\`) bugs in `file_ops.rs` that broke LLM downstream context parsing
+  - Rust test suite updated to gate Unix-only tests, enabling native Windows test parity (`#[cfg(unix)]`)
+  - Validated native PowerShell sub-process delegation for robust background tasks without relying on WSL2
+
+- UX/CLI Rebranding & Quality of Life:
+  - Rebranded the interface banner to "CLAGENT WIN" and refined banner topologies (including auth inline)
+  - Redesigned visual states, including a green matrix-style prompt border upon submission
+  - Auto-triggered slash command completion natively responds on `/` keypress
+  - Introduced explicit `/slash`, `/tools`, and helper commands directly into the root interface
+  - Enforced a hard 10-line response limit to greatly improve conversational density and pipeline speed
+  - Eliminated UI concurrency bugs where continuous output streams were being corrupted by loading spinners
 
 - Config and env loading improvements:
   - repo-local `.claw` config is loaded more consistently
   - config-defined `env` values can be applied into runtime credential lookup
   - prompt/status paths now resolve the effective model more consistently from config
-  - backend-aware default model resolution is now available through config
 
 - Auth-health and provider-awareness improvements:
   - doctor/auth checks now look at the resolved backend/model rather than assuming Anthropic first
   - OpenAI-compatible auth reporting is clearer when the selected model is not Anthropic
-  - diagnostics now surface backend id, transport, auth env vars, and base URL source more truthfully
-  - OpenRouter now uses `OPENROUTER_API_KEY` as its own first-class auth path rather than piggybacking on `OPENAI_API_KEY`
+  - OpenRouter uses `OPENROUTER_API_KEY` natively rather than piggybacking on `OPENAI_API_KEY`
 
-- Benchmark and eval work:
-  - `claw-code2` was benchmarked against OpenAI models including `openai/gpt-5.4`
-  - canonical Claude Code was benchmarked against `claude-sonnet-4-6`
-  - the eval work showed that harness behavior, not just model quality, materially affects outcomes
-
-- Smoke-test and validation work:
-  - API provider-resolution tests pass for legacy model-prefix routing and explicit backend selection
-  - the Rust CLI test suite was updated to cover backend precedence and backend-default model behavior
-  - the provider smoke suite now validates native Anthropic, native OpenAI, native xAI, and OpenRouter-backed Qwen
-  - the Windows test fixtures used by this fork were hardened so backend work can be validated locally without Unix-only assumptions
+- Benchmark and smoke-test work:
+  - Canonical Claude Code workflows (Slash commands, tools, limits) are validated on Windows test fixtures
+  - The provider smoke suite now validates native Anthropic, native OpenAI, native xAI, OpenRouter APIs, and custom instances
 
 ## Current state
 
