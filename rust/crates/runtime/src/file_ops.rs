@@ -510,8 +510,8 @@ fn make_patch(original: &str, updated: &str) -> Vec<StructuredPatchHunk> {
 fn strip_verbatim(path: PathBuf) -> PathBuf {
     if cfg!(target_os = "windows") {
         let path_str = path.to_string_lossy();
-        if path_str.starts_with(r"\\?\") {
-            return PathBuf::from(&path_str[4..]);
+        if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
         }
     }
     path
@@ -540,8 +540,7 @@ fn normalize_path_allow_missing(path: &str) -> io::Result<PathBuf> {
     if let Some(parent) = candidate.parent() {
         let canonical_parent = parent
             .canonicalize()
-            .map(strip_verbatim)
-            .unwrap_or_else(|_| parent.to_path_buf());
+            .map_or_else(|_| parent.to_path_buf(), strip_verbatim);
         if let Some(name) = candidate.file_name() {
             return Ok(canonical_parent.join(name));
         }
@@ -555,8 +554,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        edit_file, glob_search, grep_search, read_file, write_file, GrepSearchInput,
-        MAX_WRITE_SIZE,
+        edit_file, glob_search, grep_search, read_file, write_file, GrepSearchInput, MAX_WRITE_SIZE,
     };
 
     fn temp_path(name: &str) -> std::path::PathBuf {

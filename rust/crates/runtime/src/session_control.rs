@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::env;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -74,6 +73,7 @@ impl SessionStore {
         &self.workspace_root
     }
 
+    #[must_use]
     pub fn create_handle(&self, session_id: &str) -> SessionHandle {
         let id = session_id.to_string();
         let path = self

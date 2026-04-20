@@ -1,0 +1,12 @@
+[package]
+name = "rl_test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rustyline = "15.0.0"
+
+[lints]
+workspace = true

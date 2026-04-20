@@ -10,7 +10,7 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{
-    Cmd, CompletionType, Config, Context, ConditionalEventHandler, EditMode, Editor, Event,
+    Cmd, CompletionType, ConditionalEventHandler, Config, Context, EditMode, Editor, Event,
     EventContext, EventHandler, Helper, KeyCode, KeyEvent, Modifiers, RepeatCount,
 };
 

@@ -9,6 +9,7 @@ use crate::error::ApiError;
 use crate::types::{MessageRequest, MessageResponse};
 
 pub mod anthropic;
+pub mod gemini;
 pub mod openai_compat;
 
 #[allow(dead_code)]
@@ -34,6 +35,7 @@ pub enum ProviderKind {
     Anthropic,
     Xai,
     OpenAi,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,14 @@ const OPENAI_COMPAT_METADATA: ProviderMetadata = ProviderMetadata {
     default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
 };
 
+const GEMINI_METADATA: ProviderMetadata = ProviderMetadata {
+    provider: ProviderKind::Gemini,
+    provider_label: "gemini",
+    auth_env: "GEMINI_API_KEY",
+    base_url_env: "GEMINI_BASE_URL",
+    default_base_url: gemini::DEFAULT_BASE_URL,
+};
+
 const DASHSCOPE_METADATA: ProviderMetadata = ProviderMetadata {
     provider: ProviderKind::OpenAi,
     provider_label: "dashscope",
@@ -83,6 +93,7 @@ impl ProviderMetadata {
         match self.provider {
             ProviderKind::Anthropic => None,
             ProviderKind::Xai => Some(openai_compat::OpenAiCompatConfig::xai()),
+            ProviderKind::Gemini => None,
             ProviderKind::OpenAi if self.auth_env == "DASHSCOPE_API_KEY" => {
                 Some(openai_compat::OpenAiCompatConfig::dashscope())
             }
@@ -185,6 +196,28 @@ impl ResolvedBackend {
                         source: BackendBaseUrlSource::Default,
                     })
             }
+            BackendTransport::Gemini => {
+                if let Some(env_key) = self.base_url_env.as_deref() {
+                    if let Some(value) = env_or_dotenv_value(env_key) {
+                        return Some(ResolvedBackendBaseUrl {
+                            value,
+                            source: BackendBaseUrlSource::Environment(env_key.to_string()),
+                        });
+                    }
+                }
+                if let Some(configured_base_url) = self.configured_base_url.as_ref() {
+                    return Some(ResolvedBackendBaseUrl {
+                        value: configured_base_url.clone(),
+                        source: BackendBaseUrlSource::Config,
+                    });
+                }
+                self.default_base_url
+                    .as_ref()
+                    .map(|value| ResolvedBackendBaseUrl {
+                        value: value.clone(),
+                        source: BackendBaseUrlSource::Default,
+                    })
+            }
         }
     }
 }
@@ -199,6 +232,7 @@ fn resolved_backend_from_metadata(
         transport: match metadata.provider {
             ProviderKind::Anthropic => BackendTransport::Anthropic,
             ProviderKind::Xai | ProviderKind::OpenAi => BackendTransport::OpenAiCompatible,
+            ProviderKind::Gemini => BackendTransport::Gemini,
         },
         provider_label: metadata.provider_label.to_string(),
         auth_env: Some(metadata.auth_env.to_string()),
@@ -217,6 +251,11 @@ fn builtin_backend(backend_id: &str) -> Option<ResolvedBackend> {
         "anthropic" => Some(ResolvedBackend {
             provider_label: "anthropic".to_string(),
             ..resolved_backend_from_metadata("anthropic", ANTHROPIC_METADATA)
+        }),
+        "gemini" => Some(ResolvedBackend {
+            provider_label: "gemini".to_string(),
+            auth_token_env: None,
+            ..resolved_backend_from_metadata("gemini", GEMINI_METADATA)
         }),
         "openai" => Some(ResolvedBackend {
             id: "openai".to_string(),
@@ -263,6 +302,7 @@ fn resolved_backend_from_runtime_config(
     let provider = match backend.transport {
         BackendTransport::Anthropic => ProviderKind::Anthropic,
         BackendTransport::OpenAiCompatible => ProviderKind::OpenAi,
+        BackendTransport::Gemini => ProviderKind::Gemini,
     };
     ResolvedBackend {
         id: backend_id.to_string(),
@@ -275,14 +315,21 @@ fn resolved_backend_from_runtime_config(
         }),
         auth_token_env: (backend.transport == BackendTransport::Anthropic)
             .then_some("ANTHROPIC_AUTH_TOKEN".to_string()),
-        base_url_env: backend.base_url_env.clone().or_else(|| match backend.transport {
-            BackendTransport::Anthropic => Some("ANTHROPIC_BASE_URL".to_string()),
-            BackendTransport::OpenAiCompatible => None,
-        }),
+        base_url_env: backend
+            .base_url_env
+            .clone()
+            .or_else(|| match backend.transport {
+                BackendTransport::Anthropic => Some("ANTHROPIC_BASE_URL".to_string()),
+                BackendTransport::OpenAiCompatible => None,
+                BackendTransport::Gemini => Some("GEMINI_BASE_URL".to_string()),
+            }),
         configured_base_url: backend.base_url.clone(),
         default_base_url: Some(match backend.transport {
             BackendTransport::Anthropic => anthropic::DEFAULT_BASE_URL.to_string(),
-            BackendTransport::OpenAiCompatible => openai_compat::DEFAULT_OPENAI_BASE_URL.to_string(),
+            BackendTransport::OpenAiCompatible => {
+                openai_compat::DEFAULT_OPENAI_BASE_URL.to_string()
+            }
+            BackendTransport::Gemini => gemini::DEFAULT_BASE_URL.to_string(),
         }),
         default_model: backend.default_model.clone(),
         request_stream_usage: backend.transport == BackendTransport::OpenAiCompatible,
@@ -327,6 +374,7 @@ pub fn resolve_model_alias(model: &str) -> String {
                     _ => trimmed,
                 },
                 ProviderKind::OpenAi => trimmed,
+                ProviderKind::Gemini => trimmed,
             })
         })
         .map_or_else(|| trimmed.to_string(), ToOwned::to_owned)
@@ -345,10 +393,10 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     // route to the correct provider regardless of which auth env vars are set.
     // Without this, detect_provider_kind falls through to the auth-sniffer
     // order and misroutes to Anthropic if ANTHROPIC_API_KEY is present.
-    if canonical.starts_with("openai/")
-        || canonical.starts_with("gpt-")
-        || canonical.starts_with("gemini-")
-    {
+    if canonical.starts_with("gemini-") {
+        return Some(GEMINI_METADATA);
+    }
+    if canonical.starts_with("openai/") || canonical.starts_with("gpt-") {
         return Some(OPENAI_COMPAT_METADATA);
     }
     // Alibaba DashScope compatible-mode endpoint. Routes qwen/* and bare
@@ -368,6 +416,7 @@ pub const fn fallback_metadata_for_provider(kind: ProviderKind) -> ProviderMetad
         ProviderKind::Anthropic => ANTHROPIC_METADATA,
         ProviderKind::Xai => XAI_METADATA,
         ProviderKind::OpenAi => OPENAI_COMPAT_METADATA,
+        ProviderKind::Gemini => GEMINI_METADATA,
     }
 }
 
@@ -388,7 +437,8 @@ fn resolve_named_backend(
     backend_id: &str,
     runtime_config: Option<&RuntimeConfig>,
 ) -> Result<ResolvedBackend, ApiError> {
-    if let Some(runtime_backend) = runtime_config.and_then(|config| config.backends().get(backend_id))
+    if let Some(runtime_backend) =
+        runtime_config.and_then(|config| config.backends().get(backend_id))
     {
         return Ok(resolved_backend_from_runtime_config(
             backend_id,
@@ -418,7 +468,11 @@ pub fn resolve_backend(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .or_else(configured_backend_override)
-        .or_else(|| runtime_config.and_then(RuntimeConfig::backend).map(ToOwned::to_owned));
+        .or_else(|| {
+            runtime_config
+                .and_then(RuntimeConfig::backend)
+                .map(ToOwned::to_owned)
+        });
 
     match backend_id {
         Some(backend_id) => resolve_named_backend(&backend_id, runtime_config),
@@ -551,6 +605,11 @@ const FOREIGN_PROVIDER_ENV_VARS: &[(&str, &str, &str)] = &[
         "Alibaba DashScope",
         "prefix your model name with `qwen/` or `qwen-` (e.g. `--model qwen-plus`) so prefix routing selects the DashScope backend",
     ),
+    (
+        "GEMINI_API_KEY",
+        "Gemini",
+        "use a Gemini model name (e.g. `--model gemini-3-flash-preview`) so prefix routing selects the Gemini backend, or set `CLAW_BACKEND=gemini`",
+    ),
 ];
 
 /// Check whether an env var is set to a non-empty value either in the real
@@ -652,9 +711,29 @@ pub(crate) fn load_dotenv_file(
 /// Returns `None` when the file is missing, the key is absent, or the value
 /// is empty.
 pub(crate) fn dotenv_value(key: &str) -> Option<String> {
+    if let Ok(explicit) = std::env::var("CLAW_DOTENV_PATH") {
+        let path = std::path::PathBuf::from(explicit);
+        if let Some(values) = load_dotenv_file(&path) {
+            if let Some(value) = values.get(key) {
+                if !value.is_empty() {
+                    return Some(value.clone());
+                }
+            }
+        }
+    }
+
     let cwd = std::env::current_dir().ok()?;
-    let values = load_dotenv_file(&cwd.join(".env"))?;
-    values.get(key).filter(|value| !value.is_empty()).cloned()
+    for dir in [Some(cwd.as_path()), cwd.parent()].into_iter().flatten() {
+        if let Some(values) = load_dotenv_file(&dir.join(".env")) {
+            if let Some(value) = values.get(key) {
+                if !value.is_empty() {
+                    return Some(value.clone());
+                }
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -664,8 +743,8 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use serde_json::json;
     use runtime::ConfigLoader;
+    use serde_json::json;
 
     use crate::error::ApiError;
     use crate::types::{
@@ -749,9 +828,10 @@ mod tests {
         // ANTHROPIC_API_KEY was set because metadata_for_model returned None
         // and detect_provider_kind fell through to auth-sniffer order.
         // The model prefix must win over env-var presence.
-        let kind = super::metadata_for_model("openai/gpt-4.1-mini")
-            .map(|m| m.provider)
-            .unwrap_or_else(|| detect_provider_kind("openai/gpt-4.1-mini"));
+        let kind = super::metadata_for_model("openai/gpt-4.1-mini").map_or_else(
+            || detect_provider_kind("openai/gpt-4.1-mini"),
+            |m| m.provider,
+        );
         assert_eq!(
             kind,
             ProviderKind::OpenAi,
@@ -760,26 +840,21 @@ mod tests {
 
         // Also cover bare gpt- prefix
         let kind2 = super::metadata_for_model("gpt-4o")
-            .map(|m| m.provider)
-            .unwrap_or_else(|| detect_provider_kind("gpt-4o"));
+            .map_or_else(|| detect_provider_kind("gpt-4o"), |m| m.provider);
         assert_eq!(kind2, ProviderKind::OpenAi);
     }
 
     #[test]
-    fn gemini_prefix_routes_to_openai_not_anthropic() {
+    fn gemini_prefix_routes_to_gemini_not_anthropic() {
         let meta = super::metadata_for_model("gemini-2.5-flash")
-            .expect("gemini-* prefix must resolve to OpenAI-compatible metadata");
-        assert_eq!(meta.provider, ProviderKind::OpenAi);
-        assert_eq!(meta.provider_label, "openai-compatible");
-        assert_eq!(meta.auth_env, "OPENAI_API_KEY");
-        assert_eq!(meta.base_url_env, "OPENAI_BASE_URL");
+            .expect("gemini-* prefix must resolve to Gemini metadata");
+        assert_eq!(meta.provider, ProviderKind::Gemini);
+        assert_eq!(meta.provider_label, "gemini");
+        assert_eq!(meta.auth_env, "GEMINI_API_KEY");
+        assert_eq!(meta.base_url_env, "GEMINI_BASE_URL");
 
         let kind = detect_provider_kind("gemini-2.5-flash");
-        assert_eq!(
-            kind,
-            ProviderKind::OpenAi,
-            "gemini-* prefix must win over auth-sniffer order"
-        );
+        assert_eq!(kind, ProviderKind::Gemini);
     }
 
     #[test]
@@ -815,20 +890,26 @@ mod tests {
 
     #[test]
     fn metadata_builds_matching_openai_compatible_transport_configs() {
-        let openai_meta = super::metadata_for_model("gemini-2.5-flash")
-            .expect("gemini-* prefix must resolve to OpenAI-compatible metadata");
+        let openai_meta = super::metadata_for_model("gpt-4o")
+            .expect("gpt-* prefix must resolve to OpenAI-compatible metadata");
         let openai_config = openai_meta
             .openai_compat_config()
             .expect("OpenAI-compatible metadata should yield a transport config");
         assert_eq!(openai_config.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
-        assert_eq!(openai_config.base_url_env.as_deref(), Some("OPENAI_BASE_URL"));
+        assert_eq!(
+            openai_config.base_url_env.as_deref(),
+            Some("OPENAI_BASE_URL")
+        );
 
         let dashscope_meta = super::metadata_for_model("qwen-plus")
             .expect("qwen-* prefix must resolve to DashScope metadata");
         let dashscope_config = dashscope_meta
             .openai_compat_config()
             .expect("DashScope metadata should yield a transport config");
-        assert_eq!(dashscope_config.api_key_env.as_deref(), Some("DASHSCOPE_API_KEY"));
+        assert_eq!(
+            dashscope_config.api_key_env.as_deref(),
+            Some("DASHSCOPE_API_KEY")
+        );
         assert_eq!(
             dashscope_config.base_url_env.as_deref(),
             Some("DASHSCOPE_BASE_URL")
@@ -1134,6 +1215,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", None);
         let _xai = EnvVarGuard::set("XAI_API_KEY", None);
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let hint = anthropic_missing_credentials_hint();
@@ -1152,6 +1234,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", Some("sk-openrouter-varleg"));
         let _xai = EnvVarGuard::set("XAI_API_KEY", None);
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let hint = anthropic_missing_credentials_hint()
@@ -1183,6 +1266,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", None);
         let _xai = EnvVarGuard::set("XAI_API_KEY", Some("xai-test-key"));
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let hint = anthropic_missing_credentials_hint()
@@ -1210,6 +1294,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", None);
         let _xai = EnvVarGuard::set("XAI_API_KEY", None);
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", Some("sk-dashscope-test"));
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let hint = anthropic_missing_credentials_hint()
@@ -1237,6 +1322,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", Some("sk-openrouter-varleg"));
         let _xai = EnvVarGuard::set("XAI_API_KEY", Some("xai-test-key"));
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", Some("sk-dashscope-test"));
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let hint = anthropic_missing_credentials_hint()
@@ -1260,6 +1346,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", None);
         let _xai = EnvVarGuard::set("XAI_API_KEY", None);
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let error = anthropic_missing_credentials();
@@ -1294,6 +1381,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", Some("sk-openrouter-varleg"));
         let _xai = EnvVarGuard::set("XAI_API_KEY", None);
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let error = anthropic_missing_credentials();
@@ -1337,6 +1425,7 @@ NO_EQUALS_LINE
         let _openai = EnvVarGuard::set("OPENAI_API_KEY", Some(""));
         let _xai = EnvVarGuard::set("XAI_API_KEY", None);
         let _dashscope = EnvVarGuard::set("DASHSCOPE_API_KEY", None);
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", None);
 
         // when
         let hint = anthropic_missing_credentials_hint();

@@ -1,6 +1,7 @@
 use crate::error::ApiError;
 use crate::prompt_cache::{PromptCache, PromptCacheRecord, PromptCacheStats};
 use crate::providers::anthropic::{self, AnthropicClient, AuthSource};
+use crate::providers::gemini::{self, GeminiClient};
 use crate::providers::openai_compat::{self, OpenAiCompatClient, OpenAiCompatConfig};
 use crate::providers::{self, ProviderKind, ResolvedBackend};
 use crate::types::{MessageRequest, MessageResponse, StreamEvent};
@@ -11,6 +12,7 @@ pub enum ProviderClient {
     Anthropic(AnthropicClient),
     Xai(OpenAiCompatClient),
     OpenAi(OpenAiCompatClient),
+    Gemini(GeminiClient),
 }
 
 impl ProviderClient {
@@ -45,15 +47,33 @@ impl ProviderClient {
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        let backend = providers::resolve_backend(&resolved_model, runtime_config, explicit_backend)?;
+        let backend =
+            providers::resolve_backend(&resolved_model, runtime_config, explicit_backend)?;
         match backend.provider {
             ProviderKind::Anthropic => {
                 let auth = resolve_anthropic_auth_for_backend(&backend, anthropic_auth)?;
                 let base_url = backend
                     .resolved_base_url()
-                    .map(|resolved| resolved.value)
-                    .unwrap_or_else(anthropic::read_base_url);
-                Ok(Self::Anthropic(AnthropicClient::from_auth(auth).with_base_url(base_url)))
+                    .map_or_else(anthropic::read_base_url, |resolved| resolved.value);
+                Ok(Self::Anthropic(
+                    AnthropicClient::from_auth(auth).with_base_url(base_url),
+                ))
+            }
+            ProviderKind::Gemini => {
+                let primary_env = backend.auth_env.as_deref().unwrap_or("GEMINI_API_KEY");
+                let api_key = read_env_non_empty(primary_env)?
+                    .or_else(|| read_env_non_empty("GOOGLE_API_KEY").ok().flatten())
+                    .ok_or_else(|| {
+                        ApiError::Auth(format!(
+                            "missing Gemini credentials; export {primary_env} (or GOOGLE_API_KEY) before calling the Gemini API",
+                        ))
+                    })?;
+                let base_url = backend
+                    .resolved_base_url()
+                    .map_or_else(|| gemini::DEFAULT_BASE_URL.to_string(), |resolved| {
+                        resolved.value
+                    });
+                Ok(Self::Gemini(GeminiClient::new(api_key).with_base_url(base_url)))
             }
             ProviderKind::Xai | ProviderKind::OpenAi => {
                 let config = backend
@@ -64,6 +84,7 @@ impl ProviderClient {
                     ProviderKind::Xai => Self::Xai(client),
                     ProviderKind::OpenAi => Self::OpenAi(client),
                     ProviderKind::Anthropic => unreachable!(),
+                    ProviderKind::Gemini => unreachable!(),
                 })
             }
         }
@@ -75,6 +96,7 @@ impl ProviderClient {
             Self::Anthropic(_) => ProviderKind::Anthropic,
             Self::Xai(_) => ProviderKind::Xai,
             Self::OpenAi(_) => ProviderKind::OpenAi,
+            Self::Gemini(_) => ProviderKind::Gemini,
         }
     }
 
@@ -90,7 +112,7 @@ impl ProviderClient {
     pub fn prompt_cache_stats(&self) -> Option<PromptCacheStats> {
         match self {
             Self::Anthropic(client) => client.prompt_cache_stats(),
-            Self::Xai(_) | Self::OpenAi(_) => None,
+            Self::Xai(_) | Self::OpenAi(_) | Self::Gemini(_) => None,
         }
     }
 
@@ -98,7 +120,7 @@ impl ProviderClient {
     pub fn take_last_prompt_cache_record(&self) -> Option<PromptCacheRecord> {
         match self {
             Self::Anthropic(client) => client.take_last_prompt_cache_record(),
-            Self::Xai(_) | Self::OpenAi(_) => None,
+            Self::Xai(_) | Self::OpenAi(_) | Self::Gemini(_) => None,
         }
     }
 
@@ -109,6 +131,7 @@ impl ProviderClient {
         match self {
             Self::Anthropic(client) => client.send_message(request).await,
             Self::Xai(client) | Self::OpenAi(client) => client.send_message(request).await,
+            Self::Gemini(client) => client.send_message(request).await,
         }
     }
 
@@ -125,6 +148,10 @@ impl ProviderClient {
                 .stream_message(request)
                 .await
                 .map(MessageStream::OpenAiCompat),
+            Self::Gemini(client) => client
+                .stream_message(request)
+                .await
+                .map(MessageStream::Gemini),
         }
     }
 }
@@ -180,6 +207,7 @@ fn resolve_anthropic_auth_for_backend(
 pub enum MessageStream {
     Anthropic(anthropic::MessageStream),
     OpenAiCompat(openai_compat::MessageStream),
+    Gemini(gemini::MessageStream),
 }
 
 impl MessageStream {
@@ -188,6 +216,7 @@ impl MessageStream {
         match self {
             Self::Anthropic(stream) => stream.request_id(),
             Self::OpenAiCompat(stream) => stream.request_id(),
+            Self::Gemini(stream) => stream.request_id(),
         }
     }
 
@@ -195,6 +224,7 @@ impl MessageStream {
         match self {
             Self::Anthropic(stream) => stream.next_event().await,
             Self::OpenAiCompat(stream) => stream.next_event().await,
+            Self::Gemini(stream) => stream.next_event().await,
         }
     }
 }
@@ -302,10 +332,7 @@ mod tests {
                     openai_client.base_url()
                 );
             }
-            other => panic!(
-                "Expected ProviderClient::OpenAi for qwen-plus, got: {:?}",
-                other
-            ),
+            other => panic!("Expected ProviderClient::OpenAi for qwen-plus, got: {other:?}"),
         }
     }
 }

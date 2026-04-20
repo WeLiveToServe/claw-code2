@@ -1258,6 +1258,7 @@ impl SlashCommand {
     /// error messages and logging. Derived from the spec table so it always
     /// matches what the user would have typed.
     #[must_use]
+    #[allow(clippy::match_same_arms, clippy::wildcard_in_or_patterns)]
     pub fn slash_name(&self) -> &'static str {
         match self {
             Self::Help => "/help",
@@ -1323,12 +1324,10 @@ impl SlashCommand {
             Self::Tag { .. } => "/tag",
             Self::OutputStyle { .. } => "/output-style",
             Self::AddDir { .. } => "/add-dir",
-            Self::Unknown(_) => "/unknown",
             Self::Sandbox => "/sandbox",
             Self::Mcp { .. } => "/mcp",
             Self::Export { .. } => "/export",
-            #[allow(unreachable_patterns)]
-            _ => "/unknown",
+            Self::Unknown(_) | _ => "/unknown",
         }
     }
 }
@@ -1939,14 +1938,16 @@ pub fn resume_supported_slash_commands() -> Vec<&'static SlashCommandSpec> {
         .collect()
 }
 
+#[allow(clippy::match_same_arms)]
 fn slash_command_category(name: &str) -> &'static str {
     match name {
         "help" | "slash" | "slash-all-cmds" | "tools" | "tools-all" | "status" | "cost"
-        | "resume" | "session" | "version" | "login" | "logout"
-        | "usage" | "stats" | "rename" | "clear" | "compact" | "history" | "tokens" | "cache"
-        | "exit" | "summary" | "tag" | "thinkback" | "copy" | "share" | "feedback" | "rewind"
-        | "pin" | "unpin" | "bookmarks" | "context" | "files" | "focus" | "unfocus" | "retry"
-        | "stop" | "undo" => "Session",
+        | "resume" | "session" | "version" | "login" | "logout" | "usage" | "stats" | "rename"
+        | "clear" | "compact" | "history" | "tokens" | "cache" | "exit" | "summary" | "tag"
+        | "thinkback" | "copy" | "share" | "feedback" | "rewind" | "pin" | "unpin"
+        | "bookmarks" | "context" | "files" | "focus" | "unfocus" | "retry" | "stop" | "undo" => {
+            "Session"
+        }
         "diff" | "commit" | "pr" | "issue" | "branch" | "blame" | "log" | "git" | "stash"
         | "init" | "export" | "plan" | "review" | "security-review" | "bughunter" | "ultraplan"
         | "teleport" | "refactor" | "fix" | "autofix" | "explain" | "docs" | "perf" | "search"
@@ -2139,6 +2140,7 @@ pub fn render_slash_command_help() -> String {
         .join("\n")
 }
 
+#[must_use]
 pub fn render_popular_slash_commands() -> String {
     let popular = [
         ("/status", "Show current session status"),
@@ -2152,11 +2154,12 @@ pub fn render_popular_slash_commands() -> String {
     ];
     let mut lines = vec!["Popular Commands".to_string(), String::new()];
     for (cmd, desc) in popular {
-        lines.push(format!("  {:<24} {}", cmd, desc));
+        lines.push(format!("  {cmd:<24} {desc}"));
     }
     lines.join("\n")
 }
 
+#[must_use]
 pub fn render_slash_all_commands() -> String {
     let mut lines = vec!["Slash Commands".to_string(), String::new()];
     for spec in slash_command_specs() {
@@ -2173,6 +2176,7 @@ pub fn render_slash_all_commands() -> String {
     lines.join("\n")
 }
 
+#[must_use]
 pub fn render_popular_tools() -> String {
     let popular = [
         ("bash", "Execute shell commands (PowerShell on Windows)"),
@@ -2184,13 +2188,14 @@ pub fn render_popular_tools() -> String {
     ];
     let mut lines = vec!["Popular Tools".to_string(), String::new()];
     for (name, desc) in popular {
-        lines.push(format!("  {:<20} {}", name, desc));
+        lines.push(format!("  {name:<20} {desc}"));
     }
     lines.push(String::new());
     lines.push("  Type /tools-all for the complete list.".to_string());
     lines.join("\n")
 }
 
+#[must_use]
 pub fn render_all_tools() -> String {
     let tools: &[(&str, &str)] = &[
         ("bash", "Execute shell commands (PowerShell on Windows)"),
@@ -2211,7 +2216,7 @@ pub fn render_all_tools() -> String {
     ];
     let mut lines = vec!["Agent Tools".to_string(), String::new()];
     for (name, desc) in tools {
-        lines.push(format!("  {:<20} {desc}", name));
+        lines.push(format!("  {name:<20} {desc}"));
     }
     lines.join("\n")
 }
@@ -2598,7 +2603,8 @@ pub fn resolve_skill_invocation(
                         .map(|s| s.name.clone())
                         .collect();
                     if !names.is_empty() {
-                        message.push_str(&format!("\n  Available skills: {}", names.join(", ")));
+                        message.push_str("\n  Available skills: ");
+                        message.push_str(&names.join(", "));
                     }
                 }
                 message.push_str("\n  Usage: /skills [list|install <path>|help|<skill> [args]]");
@@ -4110,6 +4116,7 @@ fn mcp_server_json(name: &str, server: &ScopedMcpServerConfig) -> Value {
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn handle_slash_command(
     input: &str,
     session: &Session,

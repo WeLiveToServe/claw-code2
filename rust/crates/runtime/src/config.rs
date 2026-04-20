@@ -30,6 +30,7 @@ pub enum ResolvedPermissionMode {
 pub enum BackendTransport {
     Anthropic,
     OpenAiCompatible,
+    Gemini,
 }
 
 /// A discovered config file and the scope it contributes to.
@@ -826,8 +827,7 @@ fn parse_optional_backends(
         let provider_label = optional_string(entry, "providerLabel", &context)?
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| backend_id.clone());
+            .map_or_else(|| backend_id.clone(), ToOwned::to_owned);
         let api_key_env = optional_string(entry, "apiKeyEnv", &context)?
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -997,6 +997,7 @@ fn parse_backend_transport_label(
     match transport {
         "anthropic" => Ok(BackendTransport::Anthropic),
         "openai-compatible" => Ok(BackendTransport::OpenAiCompatible),
+        "gemini" => Ok(BackendTransport::Gemini),
         other => Err(ConfigError::Parse(format!(
             "{context}: unsupported backend transport {other}"
         ))),
@@ -1386,8 +1387,8 @@ fn push_unique(target: &mut Vec<String>, value: String) {
 mod tests {
     use super::{
         deep_merge_objects, parse_permission_mode_label, BackendTransport, ConfigLoader,
-        ConfigSource, McpServerConfig, McpTransport, ResolvedPermissionMode,
-        RuntimeHookConfig, RuntimePluginConfig, CLAW_SETTINGS_SCHEMA_NAME,
+        ConfigSource, McpServerConfig, McpTransport, ResolvedPermissionMode, RuntimeHookConfig,
+        RuntimePluginConfig, CLAW_SETTINGS_SCHEMA_NAME,
     };
     use crate::json::JsonValue;
     use crate::sandbox::FilesystemIsolationMode;
@@ -1601,7 +1602,10 @@ mod tests {
             .expect("openrouter backend should exist");
         assert_eq!(openrouter.transport, BackendTransport::OpenAiCompatible);
         assert_eq!(openrouter.provider_label, "openrouter");
-        assert_eq!(openrouter.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+        assert_eq!(
+            openrouter.api_key_env.as_deref(),
+            Some("OPENROUTER_API_KEY")
+        );
         assert_eq!(
             openrouter.base_url.as_deref(),
             Some("https://openrouter.ai/api/v1")
@@ -1617,10 +1621,7 @@ mod tests {
             .expect("droplet backend should exist");
         assert_eq!(droplet.transport, BackendTransport::OpenAiCompatible);
         assert_eq!(droplet.provider_label, "droplet-qwen");
-        assert_eq!(
-            droplet.api_key_env.as_deref(),
-            Some("DROPLET_QWEN_API_KEY")
-        );
+        assert_eq!(droplet.api_key_env.as_deref(), Some("DROPLET_QWEN_API_KEY"));
         assert_eq!(
             droplet.base_url_env.as_deref(),
             Some("DROPLET_QWEN_BASE_URL")

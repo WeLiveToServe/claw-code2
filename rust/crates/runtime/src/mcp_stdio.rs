@@ -1425,25 +1425,22 @@ mod tests {
     #[cfg(unix)]
     use tokio::runtime::Builder;
 
+    #[cfg(unix)]
+    use crate::config::McpStdioServerConfig;
     use crate::config::{
         ConfigSource, McpRemoteServerConfig, McpSdkServerConfig, McpServerConfig,
         McpWebSocketServerConfig, ScopedMcpServerConfig,
     };
     #[cfg(unix)]
-    use crate::config::McpStdioServerConfig;
-    #[cfg(unix)]
     use crate::mcp::mcp_tool_name;
     use crate::mcp_client::McpClientBootstrap;
 
-    use super::{
-        spawn_mcp_stdio_process, unsupported_server_failed_server, McpServerManager,
-    };
+    use super::{spawn_mcp_stdio_process, unsupported_server_failed_server, McpServerManager};
     #[cfg(unix)]
     use super::{
-        JsonRpcId, JsonRpcRequest, JsonRpcResponse, McpInitializeClientInfo,
-        McpInitializeParams, McpInitializeResult, McpInitializeServerInfo,
-        McpListToolsResult, McpReadResourceParams, McpReadResourceResult,
-        McpServerManagerError, McpStdioProcess, McpTool, McpToolCallParams,
+        JsonRpcId, JsonRpcRequest, JsonRpcResponse, McpInitializeClientInfo, McpInitializeParams,
+        McpInitializeResult, McpInitializeServerInfo, McpListToolsResult, McpReadResourceParams,
+        McpReadResourceResult, McpServerManagerError, McpStdioProcess, McpTool, McpToolCallParams,
     };
     use crate::McpLifecyclePhase;
 

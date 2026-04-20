@@ -575,9 +575,10 @@ fn push_event(
 /// Write current worker state to `.claw/worker-state.json` under the worker's cwd.
 /// This is the file-based observability surface: external observers (clawhip, orchestrators)
 /// poll this file instead of requiring an HTTP route on the opencode binary.
+#[allow(clippy::items_after_statements)]
 fn emit_state_file(worker: &Worker) {
     let state_dir = std::path::Path::new(&worker.cwd).join(".claw");
-    if let Err(_) = std::fs::create_dir_all(&state_dir) {
+    if std::fs::create_dir_all(&state_dir).is_err() {
         return;
     }
     let state_path = state_dir.join("worker-state.json");

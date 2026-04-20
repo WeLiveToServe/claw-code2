@@ -1,11 +1,3 @@
-#![allow(
-    dead_code,
-    unused_imports,
-    unused_variables,
-    clippy::unneeded_struct_pattern,
-    clippy::unnecessary_wraps,
-    clippy::unused_self
-)]
 mod init;
 mod input;
 mod render;
@@ -24,9 +16,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
-    detect_provider_kind, oauth_token_is_expired, resolve_startup_auth_source,
-    resolved_metadata_for_model, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
+    oauth_token_is_expired, resolve_startup_auth_source, resolved_metadata_for_model,
+    AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock, InputMessage,
+    MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
     ProviderClient as ApiProviderClient, ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice,
     ToolDefinition, ToolResultContentBlock,
 };
@@ -34,9 +26,9 @@ use api::{
 use commands::{
     classify_skills_slash_command, handle_agents_slash_command, handle_agents_slash_command_json,
     handle_mcp_slash_command, handle_mcp_slash_command_json, handle_plugins_slash_command,
-    handle_skills_slash_command, handle_skills_slash_command_json, render_slash_command_help,
+    handle_skills_slash_command, handle_skills_slash_command_json,
     render_slash_command_help_filtered, resolve_skill_invocation, resume_supported_slash_commands,
-    slash_command_specs, validate_slash_command_input, SkillSlashDispatch, SlashCommand,
+    slash_command_specs, SkillSlashDispatch, SlashCommand,
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
@@ -49,15 +41,13 @@ use runtime::{
     resolve_sandbox_status, save_oauth_credentials, ApiClient, ApiRequest, AssistantEvent,
     CompactionConfig, ConfigLoader, ConfigSource, ContentBlock, ConversationMessage,
     ConversationRuntime, McpServer, McpServerManager, McpServerSpec, McpTool, MessageRole,
-    ModelPricing, OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest,
-    PermissionMode, PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode,
-    RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    OAuthAuthorizationRequest, OAuthConfig, OAuthTokenExchangeRequest, PermissionMode,
+    PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError,
+    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tools::{
-    execute_tool, mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput,
-};
+use tools::{execute_tool, mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition};
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
 fn max_tokens_for_model(model: &str) -> u32 {
@@ -73,6 +63,7 @@ const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_TARGET: Option<&str> = option_env!("TARGET");
 const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
+#[allow(dead_code)]
 const INTERNAL_PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 const POST_TOOL_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const PRIMARY_SESSION_EXTENSION: &str = "jsonl";
@@ -176,6 +167,7 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
     format!("{prompt}\n\n{trimmed}")
 }
 
+#[allow(clippy::too_many_lines)]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let action = parse_args(&args)?;
@@ -195,11 +187,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             args,
             output_format,
         } => LiveCli::print_skills(args.as_deref(), output_format)?,
-        CliAction::Plugins {
-            action,
-            target,
-            output_format,
-        } => LiveCli::print_plugins(action.as_deref(), target.as_deref(), output_format)?,
         CliAction::PrintSystemPrompt {
             cwd,
             date,
@@ -223,7 +210,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 backend.as_deref(),
                 permission_mode,
                 output_format,
-            )?
+            )?;
         }
         CliAction::Sandbox { output_format } => print_sandbox_status_snapshot(output_format)?,
         CliAction::Prompt {
@@ -252,8 +239,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
             let effective_prompt = merge_prompt_with_stdin(&prompt, stdin_context.as_deref());
             let resolved_model = resolve_repl_model_with_backend(model, backend.clone());
-            let mut cli =
-                LiveCli::new(resolved_model, backend, true, allowed_tools, permission_mode)?;
+            let mut cli = LiveCli::new(
+                resolved_model,
+                backend,
+                true,
+                allowed_tools,
+                permission_mode,
+            )?;
             cli.set_reasoning_effort(reasoning_effort);
             cli.run_turn_with_output(&effective_prompt, output_format, compact)?;
         }
@@ -311,11 +303,6 @@ enum CliAction {
     },
     Skills {
         args: Option<String>,
-        output_format: CliOutputFormat,
-    },
-    Plugins {
-        action: Option<String>,
-        target: Option<String>,
         output_format: CliOutputFormat,
     },
     PrintSystemPrompt {
@@ -672,15 +659,13 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     if let Some(action) = parse_local_help_action(&rest) {
         return action;
     }
-    if let Some(action) =
-        parse_single_word_command_alias(
-            &rest,
-            backend.as_deref(),
-            &model,
-            permission_mode_override,
-            output_format,
-        )
-    {
+    if let Some(action) = parse_single_word_command_alias(
+        &rest,
+        backend.as_deref(),
+        &model,
+        permission_mode_override,
+        output_format,
+    ) {
         return action;
     }
 
@@ -854,6 +839,7 @@ fn join_optional_args(args: &[String]) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn parse_direct_slash_cli_action(
     rest: &[String],
     backend: Option<String>,
@@ -1136,16 +1122,44 @@ fn config_permission_mode_for_current_dir() -> Option<PermissionMode> {
         .map(permission_mode_from_resolved)
 }
 
+// Test-only helpers: used in unit tests to verify config/backend resolution logic.
+// Not called from production code paths — #[cfg(test)] keeps clippy clean.
+#[cfg(test)]
 fn config_model_for_current_dir() -> Option<String> {
     let cwd = env::current_dir().ok()?;
     let loader = ConfigLoader::default_for(&cwd);
     loader.load().ok()?.model().map(ToOwned::to_owned)
 }
 
+#[cfg(test)]
 fn config_backend_for_current_dir() -> Option<String> {
     let cwd = env::current_dir().ok()?;
     let loader = ConfigLoader::default_for(&cwd);
     loader.load().ok()?.backend().map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+fn resolve_cli_model_with_config(cli_model: String, config_model: Option<String>) -> String {
+    if cli_model != DEFAULT_MODEL {
+        return cli_model;
+    }
+    if let Some(env_model) = configured_model_override() {
+        return resolve_model_alias_with_config(&env_model);
+    }
+    if let Some(config_model) = config_model.filter(|value| !value.trim().is_empty()) {
+        return resolve_model_alias_with_config(&config_model);
+    }
+    cli_model
+}
+
+#[cfg(test)]
+fn resolve_repl_model(cli_model: String) -> String {
+    resolve_cli_model_with_config(cli_model, config_model_for_current_dir())
+}
+
+#[cfg(test)]
+fn resolve_repl_backend(cli_backend: Option<String>) -> Option<String> {
+    resolve_cli_backend_with_config(cli_backend, config_backend_for_current_dir())
 }
 
 fn runtime_config_for_current_dir() -> Option<runtime::RuntimeConfig> {
@@ -1185,19 +1199,6 @@ fn resolve_cli_backend_with_config(
         })
 }
 
-fn resolve_cli_model_with_config(cli_model: String, config_model: Option<String>) -> String {
-    if cli_model != DEFAULT_MODEL {
-        return cli_model;
-    }
-    if let Some(env_model) = configured_model_override() {
-        return resolve_model_alias_with_config(&env_model);
-    }
-    if let Some(config_model) = config_model.filter(|value| !value.trim().is_empty()) {
-        return resolve_model_alias_with_config(&config_model);
-    }
-    cli_model
-}
-
 fn resolve_cli_model_with_runtime_config(
     cli_model: String,
     runtime_config: Option<&runtime::RuntimeConfig>,
@@ -1228,7 +1229,8 @@ fn resolve_cli_model_with_runtime_config(
     {
         return resolve_model_alias_with_config(config_model);
     }
-    if let Ok(resolved_backend) = api::resolve_backend(DEFAULT_MODEL, runtime_config, explicit_backend)
+    if let Ok(resolved_backend) =
+        api::resolve_backend(DEFAULT_MODEL, runtime_config, explicit_backend)
     {
         if let Some(default_model) = resolved_backend
             .default_model
@@ -1239,14 +1241,6 @@ fn resolve_cli_model_with_runtime_config(
         }
     }
     cli_model
-}
-
-fn resolve_repl_model(cli_model: String) -> String {
-    resolve_cli_model_with_config(cli_model, config_model_for_current_dir())
-}
-
-fn resolve_repl_backend(cli_backend: Option<String>) -> Option<String> {
-    resolve_cli_backend_with_config(cli_backend, config_backend_for_current_dir())
 }
 
 fn resolve_repl_model_with_backend(cli_model: String, cli_backend: Option<String>) -> String {
@@ -1278,8 +1272,7 @@ fn apply_runtime_env_from_config(runtime_config: &runtime::RuntimeConfig) -> usi
         .filter(|(_, value)| !value.trim().is_empty())
         .fold(0, |count, (key, value)| {
             let should_set = env::var_os(key)
-                .map(|existing| existing.to_string_lossy().trim().is_empty())
-                .unwrap_or(true);
+                .is_none_or(|existing| existing.to_string_lossy().trim().is_empty());
             if should_set {
                 env::set_var(key, value);
                 count + 1
@@ -1311,20 +1304,14 @@ fn print_prompt_border(prompt: &str) {
     println!("{green}{bar}{reset}");
 }
 
-fn format_connected_line(model: &str) -> String {
-    let meta = resolved_metadata_for_model(model);
-    let provider = meta.provider_label;
-    let auth_env = meta.auth_env;
-    format!("Connected: {model} via {provider} ({auth_env})")
-}
-
 fn format_connected_line_with_backend(
     model: &str,
     explicit_backend: Option<&str>,
     runtime_config: Option<&runtime::RuntimeConfig>,
 ) -> String {
     if let Ok(backend) = api::resolve_backend(model, runtime_config, explicit_backend) {
-        let base_url = backend.configured_base_url
+        let base_url = backend
+            .configured_base_url
             .as_deref()
             .or(backend.default_base_url.as_deref())
             .unwrap_or("unknown");
@@ -1332,8 +1319,20 @@ fn format_connected_line_with_backend(
         format!("api connection: {transport}")
     } else {
         let meta = resolved_metadata_for_model(model);
-        format!("api connection: {} protocol via {}", meta.provider_label, meta.default_base_url)
+        format!(
+            "api connection: {} protocol via {}",
+            meta.provider_label, meta.default_base_url
+        )
     }
+}
+
+#[cfg(test)]
+fn format_connected_line(model: &str) -> String {
+    let meta = resolved_metadata_for_model(model);
+    format!(
+        "Connected: {model} via {} ({})",
+        meta.provider_label, meta.auth_env
+    )
 }
 
 fn describe_transport(base_url: &str, provider_label: &str) -> String {
@@ -1357,7 +1356,11 @@ fn describe_transport(base_url: &str, provider_label: &str) -> String {
         return format!("openai-compatible protocol via DashScope ({base_url})");
     }
     // Local/self-hosted inference
-    if url_lower.contains("localhost") || url_lower.contains("127.0.0.1") || url_lower.starts_with("http://10.") || url_lower.starts_with("http://192.168.") {
+    if url_lower.contains("localhost")
+        || url_lower.contains("127.0.0.1")
+        || url_lower.starts_with("http://10.")
+        || url_lower.starts_with("http://192.168.")
+    {
         if url_lower.contains(":8080") || url_lower.contains("llama") {
             return format!("openai-compatible protocol GGUF via llama.cpp ({base_url})");
         }
@@ -1434,7 +1437,7 @@ fn parse_export_args(args: &[String], output_format: CliOutputFormat) -> Result<
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| "missing value for --session".to_string())?;
-                session_reference = value.clone();
+                value.clone_into(&mut session_reference);
                 index += 2;
             }
             flag if flag.starts_with("--session=") => {
@@ -1670,6 +1673,7 @@ fn render_diagnostic_check(check: &DiagnosticCheck) -> String {
     lines.join("\n")
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn render_doctor_report(
     explicit_backend: Option<String>,
 ) -> Result<DoctorReport, Box<dyn std::error::Error>> {
@@ -1821,6 +1825,7 @@ fn check_auth_health(
     let transport_label = match resolved_backend.transport {
         runtime::BackendTransport::Anthropic => "anthropic",
         runtime::BackendTransport::OpenAiCompatible => "openai-compatible",
+        runtime::BackendTransport::Gemini => "gemini",
     };
     let base_url_summary = base_url.as_ref().map_or_else(
         || "<none>".to_string(),
@@ -1846,8 +1851,8 @@ fn check_auth_health(
                 .unwrap_or("ANTHROPIC_AUTH_TOKEN");
             let api_key_present = env_var_present(api_key_env);
             let auth_token_present = env_var_present(auth_token_env);
-            let uses_saved_oauth = api_key_env == "ANTHROPIC_API_KEY"
-                && auth_token_env == "ANTHROPIC_AUTH_TOKEN";
+            let uses_saved_oauth =
+                api_key_env == "ANTHROPIC_API_KEY" && auth_token_env == "ANTHROPIC_AUTH_TOKEN";
 
             if uses_saved_oauth {
                 match load_oauth_credentials() {
@@ -1875,9 +1880,10 @@ fn check_auth_health(
                             ),
                             format!(
                                 "Saved OAuth       expires_at={} refresh_token={} scopes={}",
-                                token_set
-                                    .expires_at
-                                    .map_or_else(|| "<none>".to_string(), |value| value.to_string()),
+                                token_set.expires_at.map_or_else(
+                                    || "<none>".to_string(),
+                                    |value| value.to_string()
+                                ),
                                 if token_set.refresh_token.is_some() {
                                     "present"
                                 } else {
@@ -1924,7 +1930,10 @@ fn check_auth_health(
                             ("auth_token_env".to_string(), json!(auth_token_env)),
                             ("api_key_present".to_string(), json!(api_key_present)),
                             ("auth_token_present".to_string(), json!(auth_token_present)),
-                            ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
+                            (
+                                "base_url".to_string(),
+                                json!(base_url.as_ref().map(|v| &v.value)),
+                            ),
                             (
                                 "base_url_source".to_string(),
                                 json!(base_url.as_ref().map(|resolved| match &resolved.source {
@@ -1989,7 +1998,10 @@ fn check_auth_health(
                         ("auth_token_env".to_string(), json!(auth_token_env)),
                         ("api_key_present".to_string(), json!(api_key_present)),
                         ("auth_token_present".to_string(), json!(auth_token_present)),
-                        ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
+                        (
+                            "base_url".to_string(),
+                            json!(base_url.as_ref().map(|v| &v.value)),
+                        ),
                         (
                             "base_url_source".to_string(),
                             json!(base_url.as_ref().map(|resolved| match &resolved.source {
@@ -2073,7 +2085,10 @@ fn check_auth_health(
                     ("auth_token_env".to_string(), json!(auth_token_env)),
                     ("api_key_present".to_string(), json!(api_key_present)),
                     ("auth_token_present".to_string(), json!(auth_token_present)),
-                    ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
+                    (
+                        "base_url".to_string(),
+                        json!(base_url.as_ref().map(|v| &v.value)),
+                    ),
                     (
                         "base_url_source".to_string(),
                         json!(base_url.as_ref().map(|resolved| match &resolved.source {
@@ -2087,15 +2102,11 @@ fn check_auth_health(
                 ]))
             }
         }
-        ProviderKind::Xai | ProviderKind::OpenAi => {
+        ProviderKind::Xai | ProviderKind::OpenAi | ProviderKind::Gemini => {
             let api_key_env = resolved_backend.auth_env.clone();
             let base_url_env = resolved_backend.base_url_env.clone();
-            let api_key_present = api_key_env
-                .as_deref()
-                .is_some_and(env_var_present);
-            let base_url_present = base_url_env
-                .as_deref()
-                .is_some_and(env_var_present);
+            let api_key_present = api_key_env.as_deref().is_some_and(env_var_present);
+            let base_url_present = base_url_env.as_deref().is_some_and(env_var_present);
             DiagnosticCheck::new(
                 "Auth",
                 if api_key_present || resolved_backend.auth_env.is_none() {
@@ -2104,7 +2115,10 @@ fn check_auth_health(
                     DiagnosticLevel::Warn
                 },
                 if api_key_present {
-                    format!("{} credentials are configured", resolved_backend.provider_label)
+                    format!(
+                        "{} credentials are configured",
+                        resolved_backend.provider_label
+                    )
                 } else if resolved_backend.auth_env.is_none() {
                     format!(
                         "{} is configured without API-key auth",
@@ -2128,7 +2142,11 @@ fn check_auth_health(
                     api_key_env.as_deref().unwrap_or("<none>"),
                     if api_key_present { "present" } else { "absent" },
                     base_url_env.as_deref().unwrap_or("<none>"),
-                    if base_url_present { "present" } else { "absent" }
+                    if base_url_present {
+                        "present"
+                    } else {
+                        "absent"
+                    }
                 ),
             ])
             .with_data(Map::from_iter([
@@ -2143,7 +2161,10 @@ fn check_auth_health(
                 ("base_url_env".to_string(), json!(base_url_env)),
                 ("api_key_present".to_string(), json!(api_key_present)),
                 ("base_url_present".to_string(), json!(base_url_present)),
-                ("base_url".to_string(), json!(base_url.as_ref().map(|v| &v.value))),
+                (
+                    "base_url".to_string(),
+                    json!(base_url.as_ref().map(|v| &v.value)),
+                ),
                 (
                     "base_url_source".to_string(),
                     json!(base_url.as_ref().map(|resolved| match &resolved.source {
@@ -2722,6 +2743,7 @@ fn version_json_value() -> serde_json::Value {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn resume_session(session_path: &Path, commands: &[String], output_format: CliOutputFormat) {
     let resolved_path = if session_path.exists() {
         session_path.to_path_buf()
@@ -3202,22 +3224,30 @@ fn run_resume_command(
         SlashCommand::SlashPopular => Ok(ResumeCommandOutcome {
             session: session.clone(),
             message: Some(commands::render_popular_slash_commands()),
-            json: Some(serde_json::json!({ "kind": "slash", "text": commands::render_popular_slash_commands() })),
+            json: Some(
+                serde_json::json!({ "kind": "slash", "text": commands::render_popular_slash_commands() }),
+            ),
         }),
         SlashCommand::SlashAllCmds => Ok(ResumeCommandOutcome {
             session: session.clone(),
             message: Some(commands::render_slash_all_commands()),
-            json: Some(serde_json::json!({ "kind": "slash-all-cmds", "text": commands::render_slash_all_commands() })),
+            json: Some(
+                serde_json::json!({ "kind": "slash-all-cmds", "text": commands::render_slash_all_commands() }),
+            ),
         }),
         SlashCommand::ToolsPopular => Ok(ResumeCommandOutcome {
             session: session.clone(),
             message: Some(commands::render_popular_tools()),
-            json: Some(serde_json::json!({ "kind": "tools", "text": commands::render_popular_tools() })),
+            json: Some(
+                serde_json::json!({ "kind": "tools", "text": commands::render_popular_tools() }),
+            ),
         }),
         SlashCommand::ToolsAll => Ok(ResumeCommandOutcome {
             session: session.clone(),
             message: Some(commands::render_all_tools()),
-            json: Some(serde_json::json!({ "kind": "tools-all", "text": commands::render_all_tools() })),
+            json: Some(
+                serde_json::json!({ "kind": "tools-all", "text": commands::render_all_tools() }),
+            ),
         }),
         SlashCommand::Compact => {
             let result = runtime::compact_session(
@@ -3473,12 +3503,12 @@ fn run_resume_command(
         }
         SlashCommand::Unknown(name) => Err(format_unknown_slash_command(name).into()),
         SlashCommand::Bughunter { .. }
-        | SlashCommand::Commit { .. }
+        | SlashCommand::Commit
         | SlashCommand::Pr { .. }
         | SlashCommand::Issue { .. }
         | SlashCommand::Ultraplan { .. }
         | SlashCommand::Teleport { .. }
-        | SlashCommand::DebugToolCall { .. }
+        | SlashCommand::DebugToolCall
         | SlashCommand::Resume { .. }
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
@@ -3531,9 +3561,7 @@ fn detect_broad_cwd() -> Option<PathBuf> {
     let Ok(cwd) = env::current_dir() else {
         return None;
     };
-    let is_home = env::var_os("HOME")
-        .map(|h| PathBuf::from(h) == cwd)
-        .unwrap_or(false);
+    let is_home = env::var_os("HOME").is_some_and(|h| h == cwd);
     let is_root = cwd.parent().is_none();
     if is_home || is_root {
         Some(cwd)
@@ -3605,10 +3633,7 @@ fn enforce_broad_cwd_policy(
 }
 
 fn run_stale_base_preflight(flag_value: Option<&str>) {
-    let cwd = match env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(_) => return,
-    };
+    let Ok(cwd) = env::current_dir() else { return };
     let source = resolve_expected_base(flag_value, &cwd);
     let state = check_base_commit(&cwd, source.as_ref());
     if let Some(warning) = format_stale_base_warning(&state) {
@@ -3616,6 +3641,7 @@ fn run_stale_base_preflight(flag_value: Option<&str>) {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn run_repl(
     backend: Option<String>,
     model: String,
@@ -4270,12 +4296,17 @@ impl LiveCli {
         );
         let auth_env = runtime_config_for_current_dir()
             .and_then(|config| {
-                let backend_id = self.backend.as_deref()
-                    .or_else(|| config.backend())?;
-                config.backends().get(backend_id)
+                let backend_id = self.backend.as_deref().or_else(|| config.backend())?;
+                config
+                    .backends()
+                    .get(backend_id)
                     .and_then(|b| b.api_key_env.clone())
             })
-            .unwrap_or_else(|| resolved_metadata_for_model(&self.model).auth_env.to_string());
+            .unwrap_or_else(|| {
+                resolved_metadata_for_model(&self.model)
+                    .auth_env
+                    .to_string()
+            });
         let api_connection = {
             let rc = runtime_config_for_current_dir();
             format_connected_line_with_backend(&self.model, self.backend.as_deref(), rc.as_ref())
@@ -4491,23 +4522,23 @@ impl LiveCli {
                 false
             }
             SlashCommand::Bughunter { scope } => {
-                self.run_bughunter(scope.as_deref())?;
+                Self::run_bughunter(scope.as_deref());
                 false
             }
             SlashCommand::Commit => {
-                self.run_commit(None)?;
+                Self::run_commit(None)?;
                 false
             }
             SlashCommand::Pr { context } => {
-                self.run_pr(context.as_deref())?;
+                Self::run_pr(context.as_deref())?;
                 false
             }
             SlashCommand::Issue { context } => {
-                self.run_issue(context.as_deref())?;
+                Self::run_issue(context.as_deref());
                 false
             }
             SlashCommand::Ultraplan { task } => {
-                self.run_ultraplan(task.as_deref())?;
+                Self::run_ultraplan(task.as_deref());
                 false
             }
             SlashCommand::Teleport { target } => {
@@ -4976,32 +5007,6 @@ impl LiveCli {
         Ok(())
     }
 
-    fn print_plugins(
-        action: Option<&str>,
-        target: Option<&str>,
-        output_format: CliOutputFormat,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let cwd = env::current_dir()?;
-        let loader = ConfigLoader::default_for(&cwd);
-        let runtime_config = loader.load()?;
-        let mut manager = build_plugin_manager(&cwd, &loader, &runtime_config);
-        let result = handle_plugins_slash_command(action, target, &mut manager)?;
-        match output_format {
-            CliOutputFormat::Text => println!("{}", result.message),
-            CliOutputFormat::Json => println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "kind": "plugin",
-                    "action": action.unwrap_or("list"),
-                    "target": target,
-                    "message": result.message,
-                    "reload_runtime": result.reload_runtime,
-                }))?
-            ),
-        }
-        Ok(())
-    }
-
     fn print_diff() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", render_diff_report()?);
         Ok(())
@@ -5025,6 +5030,7 @@ impl LiveCli {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_session_command(
         &mut self,
         action: Option<&str>,
@@ -5216,6 +5222,7 @@ impl LiveCli {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn run_internal_prompt_text_with_progress(
         &self,
         prompt: &str,
@@ -5242,6 +5249,7 @@ impl LiveCli {
         Ok(text)
     }
 
+    #[allow(dead_code)]
     fn run_internal_prompt_text(
         &self,
         prompt: &str,
@@ -5250,14 +5258,12 @@ impl LiveCli {
         self.run_internal_prompt_text_with_progress(prompt, enable_tools, None)
     }
 
-    fn run_bughunter(&self, scope: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_bughunter(scope: Option<&str>) {
         println!("{}", format_bughunter_report(scope));
-        Ok(())
     }
 
-    fn run_ultraplan(&self, task: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_ultraplan(task: Option<&str>) {
         println!("{}", format_ultraplan_report(task));
-        Ok(())
     }
 
     fn run_teleport(target: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
@@ -5276,7 +5282,7 @@ impl LiveCli {
         Ok(())
     }
 
-    fn run_commit(&mut self, args: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_commit(args: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         validate_no_args("/commit", args)?;
         let status = git_output(&["status", "--short", "--branch"])?;
         let summary = parse_git_workspace_summary(Some(&status));
@@ -5293,16 +5299,15 @@ impl LiveCli {
         Ok(())
     }
 
-    fn run_pr(&self, context: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_pr(context: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         let branch =
             resolve_git_branch_for(&env::current_dir()?).unwrap_or_else(|| "unknown".to_string());
         println!("{}", format_pr_report(&branch, context));
         Ok(())
     }
 
-    fn run_issue(&self, context: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_issue(context: Option<&str>) {
         println!("{}", format_issue_report(context));
-        Ok(())
     }
 }
 
@@ -6011,9 +6016,9 @@ fn render_config_json(
     _section: Option<&str>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let loader = ConfigLoader::default_for(&cwd);
-    let discovered = loader.discover();
-    let runtime_config = loader.load()?;
+    let config_loader = ConfigLoader::default_for(&cwd);
+    let discovered = config_loader.discover();
+    let runtime_config = config_loader.load()?;
 
     let loaded_paths: Vec<_> = runtime_config
         .loaded_entries()
@@ -6029,14 +6034,14 @@ fn render_config_json(
                 ConfigSource::Project => "project",
                 ConfigSource::Local => "local",
             };
-            let loaded = runtime_config
+            let is_loaded = runtime_config
                 .loaded_entries()
                 .iter()
                 .any(|le| le.path == e.path);
             serde_json::json!({
                 "path": e.path.display().to_string(),
                 "source": source,
-                "loaded": loaded,
+                "loaded": is_loaded,
             })
         })
         .collect();
@@ -6402,35 +6407,6 @@ fn git_output(args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-fn git_status_ok(args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(env::current_dir()?)
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("git {} failed: {stderr}", args.join(" ")).into());
-    }
-    Ok(())
-}
-
-fn command_exists(name: &str) -> bool {
-    Command::new("which")
-        .arg(name)
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-fn write_temp_text_file(
-    filename: &str,
-    contents: &str,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let path = env::temp_dir().join(filename);
-    fs::write(&path, contents)?;
-    Ok(path)
-}
-
 const DEFAULT_HISTORY_LIMIT: usize = 20;
 
 fn parse_history_count(raw: Option<&str>) -> Result<usize, String> {
@@ -6461,6 +6437,12 @@ fn format_history_timestamp(timestamp_ms: u64) -> String {
 
 // Computes civil (Gregorian) year/month/day from days since the Unix epoch
 // (1970-01-01) using Howard Hinnant's `civil_from_days` algorithm.
+// Date math: domain guarantees the casts are safe (years 0-9999, months 1-12, days 1-31).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 {
@@ -6537,34 +6519,6 @@ fn collect_session_prompt_history(session: &Session) -> Vec<PromptHistoryEntry> 
         .collect()
 }
 
-fn recent_user_context(session: &Session, limit: usize) -> String {
-    let requests = session
-        .messages
-        .iter()
-        .filter(|message| message.role == MessageRole::User)
-        .filter_map(|message| {
-            message.blocks.iter().find_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.trim().to_string()),
-                _ => None,
-            })
-        })
-        .rev()
-        .take(limit)
-        .collect::<Vec<_>>();
-
-    if requests.is_empty() {
-        "<no prior user messages>".to_string()
-    } else {
-        requests
-            .into_iter()
-            .rev()
-            .enumerate()
-            .map(|(index, text)| format!("{}. {}", index + 1, text))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-}
-
 fn truncate_for_prompt(value: &str, limit: usize) -> String {
     if value.chars().count() <= limit {
         value.trim().to_string()
@@ -6572,20 +6526,6 @@ fn truncate_for_prompt(value: &str, limit: usize) -> String {
         let truncated = value.chars().take(limit).collect::<String>();
         format!("{}\n…[truncated]", truncated.trim_end())
     }
-}
-
-fn sanitize_generated_message(value: &str) -> String {
-    value.trim().trim_matches('`').trim().replace("\r\n", "\n")
-}
-
-fn parse_titled_body(value: &str) -> Option<(String, String)> {
-    let normalized = sanitize_generated_message(value);
-    let title = normalized
-        .lines()
-        .find_map(|line| line.strip_prefix("TITLE:").map(str::trim))?;
-    let body_start = normalized.find("BODY:")?;
-    let body = normalized[body_start + "BODY:".len()..].trim();
-    Some((title.to_string(), body.to_string()))
 }
 
 fn render_version_report() -> String {
@@ -6934,6 +6874,9 @@ fn runtime_hook_config_from_plugin_hooks(hooks: PluginHooks) -> runtime::Runtime
     )
 }
 
+// InternalPromptProgress* types are built but not yet wired to a caller.
+// They back the ultraplan progress-reporting feature.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InternalPromptProgressState {
     command_label: &'static str,
@@ -6944,6 +6887,7 @@ struct InternalPromptProgressState {
     saw_final_text: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InternalPromptProgressEvent {
     Started,
@@ -6953,6 +6897,7 @@ enum InternalPromptProgressEvent {
     Failed,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct InternalPromptProgressShared {
     state: Mutex<InternalPromptProgressState>,
@@ -6960,11 +6905,13 @@ struct InternalPromptProgressShared {
     started_at: Instant,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct InternalPromptProgressReporter {
     shared: Arc<InternalPromptProgressShared>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct InternalPromptProgressRun {
     reporter: InternalPromptProgressReporter,
@@ -6972,6 +6919,7 @@ struct InternalPromptProgressRun {
     heartbeat_handle: Option<thread::JoinHandle<()>>,
 }
 
+#[allow(dead_code)]
 impl InternalPromptProgressReporter {
     fn ultraplan(task: &str) -> Self {
         Self {
@@ -7104,6 +7052,7 @@ impl InternalPromptProgressReporter {
     }
 }
 
+#[allow(dead_code)]
 impl InternalPromptProgressRun {
     fn start_ultraplan(task: &str) -> Self {
         let reporter = InternalPromptProgressReporter::ultraplan(task);
@@ -7446,6 +7395,11 @@ struct AnthropicRuntimeClient {
 }
 
 impl AnthropicRuntimeClient {
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::needless_pass_by_value
+    )]
     fn new(
         session_id: &str,
         model: String,
@@ -7570,8 +7524,7 @@ impl ApiClient for AnthropicRuntimeClient {
                             && attempt < max_attempts =>
                     {
                         // Stalled after tool completion — nudge the model by
-                        // re-sending the same request.
-                        continue;
+                        // re-sending the same request (loop continues naturally).
                     }
                     Err(error) => return Err(error),
                 }
@@ -9030,18 +8983,17 @@ mod tests {
         merge_prompt_with_stdin, normalize_permission_mode, parse_args, parse_export_args,
         parse_git_status_branch, parse_git_status_metadata_for, parse_git_workspace_summary,
         parse_history_count, permission_policy, print_help_to, push_output_block,
-        render_config_report, render_diff_report, render_diff_report_for, render_memory_report,
+        render_config_report, render_diff_report_for, render_memory_report,
         render_prompt_history_report, render_repl_help, render_resume_usage,
         render_session_markdown, resolve_model_alias, resolve_model_alias_with_config,
         resolve_repl_backend, resolve_repl_model, resolve_repl_model_with_backend,
-        resolve_session_reference, response_to_events,
-        resume_supported_slash_commands, run_resume_command, short_tool_id,
-        slash_command_completion_candidates_with_sessions, status_context,
-        summarize_tool_payload_for_markdown, validate_no_args, write_mcp_server_fixture, CliAction,
-        CliOutputFormat, CliToolExecutor, DiagnosticLevel, GitWorkspaceSummary,
-        InternalPromptProgressEvent, InternalPromptProgressState, LiveCli, LocalHelpTopic,
-        PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL, LATEST_SESSION_REFERENCE,
-        STUB_COMMANDS,
+        resolve_session_reference, response_to_events, resume_supported_slash_commands,
+        run_resume_command, short_tool_id, slash_command_completion_candidates_with_sessions,
+        status_context, summarize_tool_payload_for_markdown, validate_no_args,
+        write_mcp_server_fixture, CliAction, CliOutputFormat, CliToolExecutor, DiagnosticLevel,
+        GitWorkspaceSummary, InternalPromptProgressEvent, InternalPromptProgressState, LiveCli,
+        LocalHelpTopic, PromptHistoryEntry, SlashCommand, StatusUsage, DEFAULT_MODEL,
+        LATEST_SESSION_REFERENCE, STUB_COMMANDS,
     };
     use api::{ApiError, MessageResponse, OutputContentBlock, Usage};
     use plugins::{
@@ -9364,9 +9316,7 @@ mod tests {
         }
 
         let hooks = if include_hooks {
-            format!(
-                ",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/{hook_file}\"]\n  }}"
-            )
+            format!(",\n  \"hooks\": {{\n    \"PreToolUse\": [\"./hooks/{hook_file}\"]\n  }}")
         } else {
             String::new()
         };
@@ -10776,7 +10726,10 @@ mod tests {
 
         let line = format_connected_line(model);
 
-        assert_eq!(line, "Connected: claude-sonnet-4-6 via anthropic (ANTHROPIC_API_KEY)");
+        assert_eq!(
+            line,
+            "Connected: claude-sonnet-4-6 via anthropic (ANTHROPIC_API_KEY)"
+        );
     }
 
     #[test]
@@ -10794,7 +10747,10 @@ mod tests {
 
         let line = format_connected_line(model);
 
-        assert_eq!(line, "Connected: gemini-2.5-flash via openai-compatible (OPENAI_API_KEY)");
+        assert_eq!(
+            line,
+            "Connected: gemini-2.5-flash via openai-compatible (OPENAI_API_KEY)"
+        );
     }
 
     #[test]
@@ -10803,7 +10759,10 @@ mod tests {
 
         let line = format_connected_line(model);
 
-        assert_eq!(line, "Connected: qwen-plus via dashscope (DASHSCOPE_API_KEY)");
+        assert_eq!(
+            line,
+            "Connected: qwen-plus via dashscope (DASHSCOPE_API_KEY)"
+        );
     }
 
     #[test]
@@ -10988,7 +10947,8 @@ mod tests {
         std::env::set_var("CLAW_BACKEND", "xai");
 
         let from_env = with_current_dir(&cwd, || resolve_repl_backend(None));
-        let from_cli = with_current_dir(&cwd, || resolve_repl_backend(Some("dashscope".to_string())));
+        let from_cli =
+            with_current_dir(&cwd, || resolve_repl_backend(Some("dashscope".to_string())));
 
         match original_config_home {
             Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
@@ -11038,8 +10998,9 @@ mod tests {
         std::env::remove_var("ANTHROPIC_MODEL");
         std::env::remove_var("CLAW_BACKEND");
 
-        let resolved =
-            with_current_dir(&cwd, || resolve_repl_model_with_backend(DEFAULT_MODEL.to_string(), None));
+        let resolved = with_current_dir(&cwd, || {
+            resolve_repl_model_with_backend(DEFAULT_MODEL.to_string(), None)
+        });
 
         match original_config_home {
             Some(value) => std::env::set_var("CLAW_CONFIG_HOME", value),
@@ -12691,8 +12652,7 @@ UU conflicted.rs",
             ]);
             assert!(
                 result.is_ok(),
-                "--reasoning-effort {value} should be accepted, got: {:?}",
-                result
+                "--reasoning-effort {value} should be accepted, got: {result:?}"
             );
             if let Ok(CliAction::Prompt {
                 reasoning_effort, ..
@@ -12717,6 +12677,7 @@ UU conflicted.rs",
     }
 }
 
+#[cfg(test)]
 fn write_mcp_server_fixture(script_path: &Path) {
     let script = [
             "#!/usr/bin/env python3",

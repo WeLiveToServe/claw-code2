@@ -9,6 +9,13 @@
       "apiKeyEnv": "GEMINI_API_KEY",
       "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
       "defaultModel": "gemini-2.5-flash"
+    },
+    "gemma-t4": {
+      "transport": "openai-compatible",
+      "providerLabel": "HuggingFace Gemma 2 2B (T4)",
+      "apiKeyEnv": "HF_TOKEN",
+      "baseUrl": "https://m6o6b9g0ggy07qcn.us-east-1.aws.endpoints.huggingface.cloud/v1",
+      "defaultModel": "google/gemma-2-2b-it"
     }
   },
   "aliases": {

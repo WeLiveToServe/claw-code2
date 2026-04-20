@@ -790,7 +790,8 @@ mod tests {
 
     #[test]
     fn validates_nested_backend_keys() {
-        let source = r#"{"backends": {"droplet": {"transport": "openai-compatible", "unknown": true}}}"#;
+        let source =
+            r#"{"backends": {"droplet": {"transport": "openai-compatible", "unknown": true}}}"#;
         let parsed = JsonValue::parse(source).expect("valid json");
         let object = parsed.as_object().expect("object");
 
